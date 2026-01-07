@@ -5,26 +5,34 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QScrollArea,
     QLabel, QFrame, QDialog, QPushButton
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QPixmap, QColor, QCursor
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPointF
+from PyQt6.QtGui import (
+    QPixmap, QColor, QCursor, QPainter, QPen, QFont
+)
 from typing import List
 import requests
+import config
 from models.map import Map
 
 
 class ImageViewDialog(QDialog):
-    """显示完整图片的对话框"""
+    """显示完整图片的对话框，支持叠加标记点"""
     
-    def __init__(self, parent=None, image_url=None, map_name=None):
+    def __init__(self, parent=None, map_obj: Map | None = None):
         super().__init__(parent)
-        self.image_url = image_url
-        self.setWindowTitle(f"地图详情 - {map_name}" if map_name else "地图详情")
+        self.map_obj = map_obj
+        self.image_url = (map_obj.image_url or map_obj.thumbnail_url) if map_obj else None
+        self.full_pixmap = None
+        self.landmarks = None
+        self.setWindowTitle(f"地图详情 - {map_obj.name}" if map_obj else "地图详情")
         self.setModal(True)
         self.resize(800, 600)
         self._setup_ui()
         
-        if image_url:
+        if self.image_url:
             self._load_full_image()
+        if map_obj:
+            self._load_landmarks()
     
     def _setup_ui(self):
         """初始化UI"""
@@ -46,6 +54,11 @@ class ImageViewDialog(QDialog):
         scroll_area.setWidget(self.image_label)
         scroll_area.setWidgetResizable(True)
         layout.addWidget(scroll_area)
+        
+        # 状态信息
+        self.status_label = QLabel("正在加载地图和标记点...")
+        self.status_label.setStyleSheet("color: #CCCCCC; font-size: 12px;")
+        layout.addWidget(self.status_label)
         
         # 关闭按钮
         close_btn = QPushButton("关闭")
@@ -71,12 +84,77 @@ class ImageViewDialog(QDialog):
         self.downloader.finished.connect(self._on_full_image_loaded)
         self.downloader.start()
     
+    def _load_landmarks(self):
+        """后台获取标记点信息"""
+        self.landmark_loader = LandmarkDownloader(self.map_obj.id)
+        self.landmark_loader.finished.connect(self._on_landmarks_loaded)
+        self.landmark_loader.error.connect(self._on_landmarks_error)
+        self.landmark_loader.start()
+    
     def _on_full_image_loaded(self, _, pixmap: QPixmap):
         """完整图片加载完成"""
-        self.image_label.setPixmap(pixmap)
+        self.full_pixmap = pixmap
         self.image_label.setText("")
         self.image_label.setScaledContents(False)
         self.image_label.resize(pixmap.size())
+        self._maybe_render()
+    
+    def _on_landmarks_loaded(self, map_id: str, landmarks: list):
+        """标记点加载完成"""
+        if self.map_obj and self.map_obj.id != map_id:
+            return
+        self.landmarks = landmarks
+        self.status_label.setText("标记点已加载")
+        self._maybe_render()
+    
+    def _on_landmarks_error(self, map_id: str, message: str):
+        """标记点加载失败"""
+        if self.map_obj and self.map_obj.id != map_id:
+            return
+        # 保留图片但提示失败
+        self.status_label.setText(f"标记点加载失败: {message}")
+    
+    def _maybe_render(self):
+        """在完整图片上绘制标记点"""
+        if self.full_pixmap is None:
+            return
+        rendered = self.full_pixmap.copy()
+        if self.landmarks and self.map_obj:
+            resolution = self.map_obj.resolution or (
+                (self.map_obj.raw_data or {}).get('grid_resolution')
+            )
+            origin_x = self.map_obj.grid_origin_x or (
+                (self.map_obj.raw_data or {}).get('grid_origin_x')
+            )
+            origin_y = self.map_obj.grid_origin_y or (
+                (self.map_obj.raw_data or {}).get('grid_origin_y')
+            )
+            if resolution and origin_x is not None and origin_y is not None:
+                painter = QPainter(rendered)
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+                pen = QPen(QColor("#FF5722"))
+                pen.setWidth(4)
+                painter.setPen(pen)
+                painter.setBrush(QColor(255, 87, 34, 150))
+                painter.setFont(QFont("Arial", 10, QFont.Weight.Bold))
+                h = rendered.height()
+                w = rendered.width()
+                for idx, lm in enumerate(self.landmarks):
+                    x = lm.get('x')
+                    y = lm.get('y')
+                    name = lm.get('name') or lm.get('id') or f"LM{idx+1}"
+                    if x is None or y is None:
+                        continue
+                    px = (x - origin_x) / resolution
+                    py = h - ((y - origin_y) / resolution)
+                    if 0 <= px <= w and 0 <= py <= h:
+                        painter.drawEllipse(QPointF(px, py), 6, 6)
+                        painter.drawText(px + 8, py - 8, name)
+                painter.end()
+            else:
+                self.status_label.setText("缺少分辨率或原点坐标，无法绘制标记点")
+        self.image_label.setPixmap(rendered)
+        self.image_label.setText("")
 
 
 class ImageDownloader(QThread):
@@ -99,6 +177,50 @@ class ImageDownloader(QThread):
                     self.finished.emit(self.map_id, pixmap)
         except Exception:
             pass  # 静默处理错误
+
+
+class LandmarkDownloader(QThread):
+    """后台获取地图标记点"""
+    finished = pyqtSignal(str, list)  # map_id, landmarks list
+    error = pyqtSignal(str, str)      # map_id, error message
+    
+    def __init__(self, map_id: str):
+        super().__init__()
+        self.map_id = map_id
+        self.url = f"{config.API_BASE_URL}/mappings/{map_id}/landmarks.json"
+    
+    def run(self):
+        try:
+            response = requests.get(self.url, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            landmarks = self._normalize_landmarks(data)
+            self.finished.emit(self.map_id, landmarks)
+        except Exception as e:
+            self.error.emit(self.map_id, str(e))
+    
+    def _normalize_landmarks(self, data):
+        raw_list = []
+        if isinstance(data, list):
+            raw_list = data
+        elif isinstance(data, dict):
+            if isinstance(data.get('landmarks'), list):
+                raw_list = data['landmarks']
+            elif isinstance(data.get('data'), list):
+                raw_list = data['data']
+            else:
+                raw_list = [data]
+        results = []
+        for item in raw_list:
+            if not isinstance(item, dict):
+                continue
+            x = item.get('x') or item.get('pos_x') or item.get('position_x')
+            y = item.get('y') or item.get('pos_y') or item.get('position_y')
+            name = item.get('name') or item.get('label') or item.get('id')
+            if x is None or y is None:
+                continue
+            results.append({'x': float(x), 'y': float(y), 'name': str(name) if name else None})
+        return results
 
 
 class MapTableWidget(QWidget):
@@ -249,6 +371,8 @@ class MapTableWidget(QWidget):
         details = []
         if map_obj.resolution is not None:
             details.append(f"分辨率: {map_obj.resolution:.3f}")
+        if map_obj.grid_origin_x is not None and map_obj.grid_origin_y is not None:
+            details.append(f"原点坐标: ({map_obj.grid_origin_x:.2f}, {map_obj.grid_origin_y:.2f})")
         if map_obj.size:
             details.append(f"大小: {map_obj.size}")
         if map_obj.created_at:
@@ -274,10 +398,9 @@ class MapTableWidget(QWidget):
     
     def _on_thumbnail_clicked(self, map_obj: Map):
         """缩略图点击事件处理"""
-        # 使用thumbnail_url对应的png图片URL
-        image_url = map_obj.thumbnail_url
+        image_url = map_obj.image_url or map_obj.thumbnail_url
         if image_url:
-            dialog = ImageViewDialog(self, image_url, map_obj.name)
+            dialog = ImageViewDialog(self, map_obj)
             dialog.exec()
     
     def _on_thumbnail_downloaded(self, map_id: str, pixmap: QPixmap):

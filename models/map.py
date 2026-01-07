@@ -15,7 +15,9 @@ class Map:
     created_at: Optional[str] = None
     modified_at: Optional[str] = None
     size: Optional[str] = None
-    resolution: Optional[float] = None
+    resolution: Optional[float] = None  # 单个像素的大小，通常为 0.05 m/pixel
+    grid_origin_x: Optional[float] = None  # 左下角的X坐标
+    grid_origin_y: Optional[float] = None  # 左下角的Y坐标
     thumbnail_url: Optional[str] = None  # 缩略图 URL
     image_url: Optional[str] = None  # 完整图片 URL
     continue_mapping: Optional[bool] = None
@@ -66,6 +68,8 @@ class Map:
             modified_at=modified_at,
             size=None,
             resolution=data.get('grid_resolution'),
+            grid_origin_x=data.get('grid_origin_x'),
+            grid_origin_y=data.get('grid_origin_y'),
             thumbnail_url=data.get('thumbnail_url'),
             image_url=data.get('image_url'),
             continue_mapping=data.get('continue_mapping'),

@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QTextEdit, QTabWidget, QMessageBox,
     QStatusBar, QLabel
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal, QObject
 from PyQt6.QtGui import QFont
 import json
 import config
@@ -16,6 +16,14 @@ from workers.api_worker import APIWorker
 from workers.map_worker import MapAPIWorker
 from models.device import Device
 from models.map import Map
+from core.ws_subscriber import TopicSubscriber
+from utils.config_loader import load_topics_from_file
+
+
+class _TopicRelay(QObject):
+    """将后台线程的 WebSocket 消息转发到主线程"""
+    topic_message = pyqtSignal(str, object)
+    topic_error = pyqtSignal(str)
 
 
 class MainWindow(QMainWindow):
@@ -25,6 +33,10 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.api_worker = None
         self.map_worker = None
+        self.ws_subscriber = None
+        self._topic_relay = _TopicRelay()
+        self._topic_relay.topic_message.connect(self._on_topic_message_ui)
+        self._topic_relay.topic_error.connect(self._on_topic_error_ui)
         self._setup_ui()
     
     def _setup_ui(self):
@@ -184,6 +196,9 @@ class MainWindow(QMainWindow):
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("就绪 - 点击按钮获取设备数据")
+        
+        # 启动 WebSocket 话题订阅
+        self._start_topic_subscription()
     
     def _on_fetch_clicked(self):
         """处理"获取设备数据"按钮点击事件"""
@@ -348,6 +363,52 @@ class MainWindow(QMainWindow):
         """重置获取地图按钮状态"""
         self.fetch_maps_button.setEnabled(True)
         self.fetch_maps_button.setText("🗺️ 获取地图列表")
+
+    # --- WebSocket topic subscription ---
+    def _start_topic_subscription(self):
+        # 从文件中加载要监听的话题
+        topics = load_topics_from_file(config.TOPICS_FILE)
+        
+        if not topics:
+            self.status_bar.showMessage("未从话题配置文件中加载到任何话题", 3000)
+            return
+        
+        self.ws_subscriber = TopicSubscriber(
+            url=config.API_WS_URL,
+            topics=topics,
+            on_message=lambda topic, payload: self._topic_relay.topic_message.emit(topic, payload),
+            on_error=lambda message: self._topic_relay.topic_error.emit(message),
+            reconnect_delay=3.0,
+        )
+        self.ws_subscriber.start()
+        topics_str = ", ".join(topics)
+        self.status_bar.showMessage(f"已订阅: {topics_str}", 3000)
+
+    def _on_topic_message_ui(self, topic: str, payload):
+        """主线程处理话题消息"""
+        try:
+            text = json.dumps(payload, ensure_ascii=False)
+        except Exception:
+            text = str(payload)
+        self.status_bar.showMessage(f"WS {topic} 已更新", 2000)
+        self._append_live_log(topic, text)
+
+    def _on_topic_error_ui(self, message: str):
+        """主线程处理话题错误"""
+        self.status_bar.showMessage(f"WS 错误: {message}", 5000)
+
+    def _append_live_log(self, topic: str, text: str):
+        """在 JSON 视图顶部追加最新话题消息（截断保留最近内容）"""
+        prefix = f"[WS {topic}] {text}\n"
+        existing = self.json_text.toPlainText()
+        truncated = existing[:8000]  # 避免文本过长
+        self.json_text.setPlainText(prefix + truncated)
+
+    def closeEvent(self, event):
+        """窗口关闭时清理后台线程"""
+        if self.ws_subscriber:
+            self.ws_subscriber.stop()
+        super().closeEvent(event)
     
     def _parse_devices(self, data: dict) -> list[Device]:
         """
