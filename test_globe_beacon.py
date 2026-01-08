@@ -23,60 +23,60 @@ def test_coordinate_transform():
     result = main_window._transform_local_to_global(
         local_x=1.0,
         local_y=0.0,
-        anchor_x=0.0,
-        anchor_y=0.0,
+        m_anchor_x=0.0,
+        m_anchor_y=0.0,
         anchor_theta=0.0
     )
     print(f"测试 1 - Anchor 在原点，朝向 0°")
     print(f"  局部坐标: (1.0, 0.0)")
-    print(f"  全局坐标: ({result['x']:.2f}, {result['y']:.2f})")
-    assert abs(result['x'] - 1.0) < 0.01 and abs(result['y'] - 0.0) < 0.01, "测试 1 失败"
+    print(f"  全局坐标: ({result['m_x']:.2f}, {result['m_y']:.2f})")
+    assert abs(result['m_x'] - 1.0) < 0.01 and abs(result['m_y'] - 0.0) < 0.01, "测试 1 失败"
     print("  ✓ 通过\n")
     
     # 测试 2: Anchor 在原点，朝向 Y 轴正方向 (π/2)
     result = main_window._transform_local_to_global(
         local_x=0.0,
         local_y=1.0,
-        anchor_x=0.0,
-        anchor_y=0.0,
+        m_anchor_x=0.0,
+        m_anchor_y=0.0,
         anchor_theta=math.pi / 2
     )
     print(f"测试 2 - Anchor 在原点，朝向 90°")
     print(f"  局部坐标: (0.0, 1.0)")
-    print(f"  全局坐标: ({result['x']:.2f}, {result['y']:.2f})")
+    print(f"  全局坐标: ({result['m_x']:.2f}, {result['m_y']:.2f})")
     # 预期: (-1.0, 0.0) 因为局部 Y 轴 (1.0) 旋转 90° 后指向全局 X 轴负方向
-    assert abs(result['x'] - (-1.0)) < 0.01 and abs(result['y'] - 0.0) < 0.01, f"测试 2 失败，得到 ({result['x']}, {result['y']})"
+    assert abs(result['m_x'] - (-1.0)) < 0.01 and abs(result['m_y'] - 0.0) < 0.01, f"测试 2 失败，得到 ({result['m_x']}, {result['m_y']})"
     print("  ✓ 通过\n")
     
     # 测试 3: Anchor 在 (5, 10)，朝向 0°
     result = main_window._transform_local_to_global(
         local_x=1.0,
         local_y=0.0,
-        anchor_x=5.0,
-        anchor_y=10.0,
+        m_anchor_x=5.0,
+        m_anchor_y=10.0,
         anchor_theta=0.0
     )
     print(f"测试 3 - Anchor 在 (5, 10)，朝向 0°")
     print(f"  局部坐标: (1.0, 0.0)")
-    print(f"  全局坐标: ({result['x']:.2f}, {result['y']:.2f})")
-    assert abs(result['x'] - 6.0) < 0.01 and abs(result['y'] - 10.0) < 0.01, "测试 3 失败"
+    print(f"  全局坐标: ({result['m_x']:.2f}, {result['m_y']:.2f})")
+    assert abs(result['m_x'] - 6.0) < 0.01 and abs(result['m_y'] - 10.0) < 0.01, "测试 3 失败"
     print("  ✓ 通过\n")
     
     # 测试 4: Anchor 在 (5, 10)，朝向 π/2 (Y 轴正方向)
     result = main_window._transform_local_to_global(
         local_x=1.0,
         local_y=1.0,
-        anchor_x=5.0,
-        anchor_y=10.0,
+        m_anchor_x=5.0,
+        m_anchor_y=10.0,
         anchor_theta=math.pi / 2
     )
     print(f"测试 4 - Anchor 在 (5, 10)，朝向 90°")
     print(f"  局部坐标: (1.0, 1.0)")
-    print(f"  全局坐标: ({result['x']:.2f}, {result['y']:.2f})")
+    print(f"  全局坐标: ({result['m_x']:.2f}, {result['m_y']:.2f})")
     # Anchor 局部 X(1.0) 旋转 90° -> 全局 Y(-1.0)
     # Anchor 局部 Y(1.0) 旋转 90° -> 全局 X(1.0)
     # 全局: (5.0 + 1.0, 10.0 - 1.0) = (6.0, 9.0)
-    assert abs(result['x'] - 4.0) < 0.01 and abs(result['y'] - 11.0) < 0.01, f"测试 4 失败，得到 ({result['x']}, {result['y']})"
+    assert abs(result['m_x'] - 4.0) < 0.01 and abs(result['m_y'] - 11.0) < 0.01, f"测试 4 失败，得到 ({result['m_x']}, {result['m_y']})"
     print("  ✓ 通过\n")
     
     print("=" * 60)

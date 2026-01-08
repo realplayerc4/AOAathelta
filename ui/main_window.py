@@ -14,7 +14,7 @@ import json
 import config
 from ui.widgets.device_table import DeviceTableWidget
 from ui.widgets.map_table import MapTableWidget
-from ui.widgets.map_viewer import MapViewerDialog
+from ui.widgets.map_viewer import MapViewerDialog, MapViewerWidget
 from ui.widgets.aoa_viewer import AOADataWidget, AOAPositionViewer
 from workers.api_worker import APIWorker
 from workers.map_worker import MapAPIWorker
@@ -48,9 +48,12 @@ class MainWindow(QMainWindow):
         self._topic_relay.topic_error.connect(self._on_topic_error_ui)
         self.latest_map_data = None  # 保存最新的地图数据
         self.map_viewer_dialog = None  # 地图查看器对话框
+        self.map_viewer_widget = None  # 地图查看器组件（选项卡）
         self.aoa_position_viewer = None  # AOA 位置查看器
         self.map_receive_count = 0  # 地图接收计数
         self.beacon_global_position = None  # 保存 beacon 全局坐标
+        self.latest_filtered_beacon = None  # 保存最新的滤波后的 beacon 局部坐标 {"m_filter_x": float, "m_filter_y": float, "confidence": float, "tag_id": int}
+        self.latest_tracked_pose = None  # 保存最新的小车位置 {"pos": [x, y], "ori": angle}
         self._setup_ui()
     
     def _setup_ui(self):
@@ -153,36 +156,9 @@ class MainWindow(QMainWindow):
             }
         """)
         
-        # 显示实时地图按钮
-        self.show_map_button = QPushButton("📍 显示实时地图")
-        self.show_map_button.clicked.connect(self._on_show_map_clicked)
-        self.show_map_button.setMinimumHeight(45)
-        self.show_map_button.setStyleSheet("""
-            QPushButton {
-                background-color: #FF9800;
-                color: white;
-                border: none;
-                border-radius: 5px;
-                font-size: 14px;
-                font-weight: bold;
-                padding: 10px;
-            }
-            QPushButton:hover {
-                background-color: #F57C00;
-            }
-            QPushButton:pressed {
-                background-color: #E65100;
-            }
-            QPushButton:disabled {
-                background-color: #cccccc;
-                color: #666666;
-            }
-        """)
-        
         control_layout.addWidget(self.fetch_button, 2)
         control_layout.addWidget(self.clear_button, 1)
         control_layout.addWidget(self.fetch_maps_button, 2)
-        control_layout.addWidget(self.show_map_button, 2)
         
         # AOA 滤波控制按钮
         self.filter_toggle_button = QPushButton("🔬 禁用卡尔曼滤波")
@@ -205,7 +181,7 @@ class MainWindow(QMainWindow):
                 background-color: #6A1B9A;
             }
         """)
-        control_layout.addWidget(self.filter_toggle_button, 2)
+        # 滤波开关按钮将在 AOA 数据选项卡内展示，不放在顶栏
         
         main_layout.addLayout(control_layout)
         
@@ -222,10 +198,12 @@ class MainWindow(QMainWindow):
                 margin-right: 2px;
                 border-top-left-radius: 5px;
                 border-top-right-radius: 5px;
+                color: #000000;  /* 表头文字为黑色 */
             }
             QTabBar::tab:selected {
                 background-color: #ffffff;
                 font-weight: bold;
+                color: #000000;  /* 选中时保持黑色 */
             }
         """)
         
@@ -239,7 +217,16 @@ class MainWindow(QMainWindow):
         
         # AOA 数据标签页
         self.aoa_widget = AOADataWidget()
+        # 将卡尔曼滤波开关移动到 AOA 数据选项卡内
+        aoa_layout = self.aoa_widget.layout()
+        if aoa_layout is not None:
+            # 放在控制面板之后、数据表之前
+            aoa_layout.insertWidget(2, self.filter_toggle_button)
         self.tab_widget.addTab(self.aoa_widget, "📡 AOA 数据")
+        
+        # 实时地图标签页
+        self.map_viewer_widget = MapViewerWidget()
+        self.tab_widget.addTab(self.map_viewer_widget, "🗺️ 实时地图")
         
         # 原始JSON视图标签页
         self.json_text = QTextEdit()
@@ -435,33 +422,8 @@ class MainWindow(QMainWindow):
         self.fetch_maps_button.setEnabled(True)
         self.fetch_maps_button.setText("🗺️ 获取地图列表")
     
-    def _on_show_map_clicked(self):
-        """处理显示实时地图按钮点击事件"""
-        if not self.latest_map_data:
-            QMessageBox.information(
-                self,
-                "无地图数据",
-                "尚未接收到地图数据。\n\n"
-                "请确保：\n"
-                "1. WebSocket 连接正常\n"
-                "2. /map 话题已在 topics.txt 中配置\n"
-                "3. 设备正在发布地图数据\n\n"
-                f"已接收地图次数: {self.map_receive_count}"
-            )
-            return
-        
-        # 创建或显示地图查看器
-        if not self.map_viewer_dialog:
-            self.map_viewer_dialog = MapViewerDialog(self)
-        
-        self.map_viewer_dialog.update_map(self.latest_map_data)
-        self.map_viewer_dialog.show()
-        self.map_viewer_dialog.raise_()
-        self.map_viewer_dialog.activateWindow()
-        
-        # 更新按钮文本显示接收次数
-        self.show_map_button.setText(f"📍 显示实时地图 ({self.map_receive_count})")
     
+
     def _on_filter_toggle_clicked(self):
         """处理卡尔曼滤波启用/禁用按钮点击事件"""
         if not self.aoa_worker:
@@ -550,6 +512,9 @@ class MainWindow(QMainWindow):
             size = payload.get('size', [0, 0])
             data_size = len(payload.get('data', '')) * 3 // 4 // 1024  # KB
             
+            # 调试信息
+            logger.debug(f"地图更新 #{self.map_receive_count}, beacon_global_position={self.beacon_global_position is not None}")
+            
             # 更新状态栏显示更详细的地图信息
             self.status_bar.showMessage(
                 f"🗺️ 地图已更新 (#{self.map_receive_count}) - "
@@ -557,9 +522,21 @@ class MainWindow(QMainWindow):
                 5000
             )
             
-            # 如果地图查看器已打开，自动更新
+            # 更新选项卡中的地图查看器
+            if self.map_viewer_widget:
+                self.map_viewer_widget.update_map(payload)
+                # 同时更新 beacon 位置（如果已知）
+                if self.beacon_global_position:
+                    logger.debug(f"更新widget中的beacon位置: {self.beacon_global_position}")
+                    self.map_viewer_widget.update_beacon_position(self.beacon_global_position)
+            
+            # 如果地图对话框已打开，也更新它
             if self.map_viewer_dialog and self.map_viewer_dialog.isVisible():
                 self.map_viewer_dialog.update_map(payload)
+                # 同时更新 beacon 位置（如果已知）
+                if self.beacon_global_position:
+                    logger.debug(f"更新dialog中的beacon位置: {self.beacon_global_position}")
+                    self.map_viewer_dialog.update_beacon_position(self.beacon_global_position)
         
         # 处理追踪位置话题
         elif topic == "/tracked_pose":
@@ -567,99 +544,110 @@ class MainWindow(QMainWindow):
                 # 验证数据格式
                 if not isinstance(payload, dict):
                     return
-                
-                # 提取位置和朝向
-                if "pos" in payload and "ori" in payload:
-                    pos = payload["pos"]
-                    ori = payload["ori"]
+
+                # 兼容不同的消息结构: 直接顶层 或 嵌套在 data/payload/pose 字段
+                candidate = payload
+                for key in ("data", "payload", "pose"):
+                    if isinstance(candidate, dict) and key in candidate and isinstance(candidate[key], dict):
+                        # 仅当目标字典中含有 pos/ori 或 position/theta/yaw 线索时才下钻
+                        probe = candidate[key]
+                        if any(k in probe for k in ("pos", "ori", "position", "theta", "yaw")):
+                            candidate = probe
+                            break
+
+                def _to_float(x):
+                    try:
+                        return float(x)
+                    except Exception:
+                        return None
+
+                # 提取位置 pos
+                pos = None
+                if isinstance(candidate.get("pos"), (list, tuple)) and len(candidate.get("pos")) >= 2:
+                    pos = [ _to_float(candidate["pos"][0]), _to_float(candidate["pos"][1]) ]
+                elif isinstance(candidate.get("pos"), dict) and {"x","y"} <= candidate["pos"].keys():
+                    pos = [ _to_float(candidate["pos"]["x"]), _to_float(candidate["pos"]["y"]) ]
+                elif isinstance(candidate.get("position"), dict) and {"x","y"} <= candidate["position"].keys():
+                    pos = [ _to_float(candidate["position"]["x"]), _to_float(candidate["position"]["y"]) ]
+
+                # 提取朝向 ori
+                ori = None
+                if "ori" in candidate:
+                    ori = _to_float(candidate["ori"])
+                elif "theta" in candidate:
+                    ori = _to_float(candidate["theta"])
+                elif "yaw" in candidate:
+                    ori = _to_float(candidate["yaw"])
+
+                if pos and None not in pos and ori is not None:
+                    pose_data = { "pos": pos, "ori": ori }
                     
-                    # 验证位置格式
-                    if isinstance(pos, (list, tuple)) and len(pos) >= 2:
-                        pose_data = {
-                            "pos": [float(pos[0]), float(pos[1])],
-                            "ori": float(ori)
-                        }
-                        
-                        # 更新状态栏
-                        self.status_bar.showMessage(
-                            f"📍 AMR位置: ({pose_data['pos'][0]:.2f}, {pose_data['pos'][1]:.2f})m, "
-                            f"朝向: {pose_data['ori']:.2f}rad",
-                            3000
+                    # 保存最新的小车位置（用于实时更新 beacon 全局坐标）
+                    self.latest_tracked_pose = pose_data
+
+                    # 更新状态栏
+                    self.status_bar.showMessage(
+                        f"📍 AMR位置: ({pose_data['pos'][0]:.2f}, {pose_data['pos'][1]:.2f})m, "
+                        f"朝向: {pose_data['ori']:.2f}rad",
+                        3000
+                    )
+
+                    # 重新计算并更新 beacon 全局坐标
+                    self._update_beacon_global_position()
+                    
+                    # 旧代码保留用于日志（已由 _update_beacon_global_position 处理）
+                    if self.latest_filtered_beacon is not None:
+                        beacon_local = self.latest_filtered_beacon
+                        # 记录局部坐标和 Anchor 信息
+                        logger.info(f"【Beacon坐标计算 - 使用最新滤波坐标】")
+                        logger.info(f"  1️⃣ Beacon在Anchor坐标系中的局部坐标（最新滤波）:")
+                        logger.info(f"     m_filter_x={beacon_local['m_filter_x']:.3f}m (车体右侧)")
+                        logger.info(f"     m_filter_y={beacon_local['m_filter_y']:.3f}m (车头前方)")
+                        logger.info(f"     confidence={beacon_local['confidence']:.2f}")
+
+                        logger.info(f"  2️⃣ Anchor在全局坐标系中的位置和朝向:")
+                        logger.info(f"     x_anchor={pose_data['pos'][0]:.3f}m")
+                        logger.info(f"     y_anchor={pose_data['pos'][1]:.3f}m")
+                        import math
+                        logger.info(f"     theta={pose_data['ori']:.3f}rad ({math.degrees(pose_data['ori']):.1f}°)")
+
+                        # 计算全局坐标（使用最新滤波坐标）
+                        beacon_global = self._transform_local_to_global(
+                            local_x=beacon_local['m_filter_x'],
+                            local_y=beacon_local['m_filter_y'],
+                            m_anchor_x=pose_data['pos'][0],
+                            m_anchor_y=pose_data['pos'][1],
+                            anchor_theta=pose_data['ori']
                         )
-                        
-                        # 获取卡尔曼滤波后的 beacon 坐标（局部坐标）
-                        if self.aoa_worker:
-                            beacon_local = self.aoa_worker.get_filtered_beacon_coordinates(tag_id=1)
-                            if beacon_local.get('initialized'):
-                                # 计算全局坐标
-                                beacon_global = self._transform_local_to_global(
-                                    local_x=beacon_local['x'],
-                                    local_y=beacon_local['y'],
-                                    anchor_x=pose_data['pos'][0],
-                                    anchor_y=pose_data['pos'][1],
-                                    anchor_theta=pose_data['ori']
-                                )
-                                
-                                # 保存全局坐标用于地图显示
-                                self.beacon_global_position = {
-                                    'x': beacon_global['x'],
-                                    'y': beacon_global['y'],
-                                    'confidence': beacon_local['confidence'],
-                                    'tag_id': beacon_local['tag_id']
-                                }
-                                
-                                # 发布 /globe_beacon 话题
-                                self._publish_globe_beacon(self.beacon_global_position)
-                        
-                        # 如果地图查看器已打开，更新追踪位置
-                        if self.map_viewer_dialog and self.map_viewer_dialog.isVisible():
-                            self.map_viewer_dialog.update_tracked_pose(pose_data)
-                            # 同时更新 beacon 位置
-                            if hasattr(self, 'beacon_global_position'):
-                                self.map_viewer_dialog.update_beacon_position(self.beacon_global_position)
-                    elif isinstance(pos, dict) and "x" in pos and "y" in pos:
-                        pose_data = {
-                            "pos": [float(pos["x"]), float(pos["y"])],
-                            "ori": float(ori)
+
+                        # 记录全局坐标
+                        logger.info(f"  3️⃣ Beacon在全局坐标系中的位置:")
+                        logger.info(f"     m_x_global={beacon_global['m_x']:.3f}m")
+                        logger.info(f"     m_y_global={beacon_global['m_y']:.3f}m")
+                        logger.info(f"  ✅ 坐标转换完成（使用最新滤波坐标）")
+
+                        # 保存全局坐标用于地图显示（0.01m精度处理）
+                        self.beacon_global_position = {
+                            'm_x': round(beacon_global['m_x'], 2),
+                            'm_y': round(beacon_global['m_y'], 2),
+                            'confidence': beacon_local['confidence'],
+                            'tag_id': beacon_local['tag_id']
                         }
-                        
-                        # 更新状态栏
-                        self.status_bar.showMessage(
-                            f"📍 AMR位置: ({pose_data['pos'][0]:.2f}, {pose_data['pos'][1]:.2f})m, "
-                            f"朝向: {pose_data['ori']:.2f}rad",
-                            3000
-                        )
-                        
-                        # 获取卡尔曼滤波后的 beacon 坐标（局部坐标）
-                        if self.aoa_worker:
-                            beacon_local = self.aoa_worker.get_filtered_beacon_coordinates(tag_id=1)
-                            if beacon_local.get('initialized'):
-                                # 计算全局坐标
-                                beacon_global = self._transform_local_to_global(
-                                    local_x=beacon_local['x'],
-                                    local_y=beacon_local['y'],
-                                    anchor_x=pose_data['pos'][0],
-                                    anchor_y=pose_data['pos'][1],
-                                    anchor_theta=pose_data['ori']
-                                )
-                                
-                                # 保存全局坐标用于地图显示
-                                self.beacon_global_position = {
-                                    'x': beacon_global['x'],
-                                    'y': beacon_global['y'],
-                                    'confidence': beacon_local['confidence'],
-                                    'tag_id': beacon_local['tag_id']
-                                }
-                                
-                                # 发布 /globe_beacon 话题
-                                self._publish_globe_beacon(self.beacon_global_position)
-                        
-                        # 如果地图查看器已打开，更新追踪位置
-                        if self.map_viewer_dialog and self.map_viewer_dialog.isVisible():
-                            self.map_viewer_dialog.update_tracked_pose(pose_data)
-                            # 同时更新 beacon 位置
-                            if hasattr(self, 'beacon_global_position'):
-                                self.map_viewer_dialog.update_beacon_position(self.beacon_global_position)
+                        logger.info(f"保存beacon全局位置: x={beacon_global['m_x']:.2f}, y={beacon_global['m_y']:.2f}")
+
+                        # 发布 /globe_beacon 话题
+                        self._publish_globe_beacon(self.beacon_global_position)
+                    else:
+                        logger.debug("⏳ 尚未接收到滤波后的 Beacon 数据，等待 AOA 测量...")
+
+                    # 实时更新地图查看器中的小车位置
+                    if self.map_viewer_dialog and self.map_viewer_dialog.isVisible():
+                        logger.debug(f"🗺️ 更新对话框中的小车位置")
+                        self.map_viewer_dialog.update_tracked_pose(pose_data)
+
+                    if self.map_viewer_widget:
+                        logger.debug(f"🗺️ 更新选项卡中的小车位置")
+                        self.map_viewer_widget.update_tracked_pose(pose_data)
             except (ValueError, KeyError, TypeError) as e:
                 # 数据格式错误，跳过
                 pass
@@ -700,6 +688,15 @@ class MainWindow(QMainWindow):
             
             # 启动工作线程
             self.aoa_worker.start()
+
+            # 反映当前卡尔曼滤波启用状态
+            try:
+                state_text = "启用" if getattr(self.aoa_worker, "filter_enabled", False) else "禁用"
+                self.status_bar.showMessage(f"卡尔曼滤波已{state_text}", 3000)
+                if hasattr(self, "aoa_widget") and hasattr(self.aoa_widget, "add_status_message"):
+                    self.aoa_widget.add_status_message(f"✅ 卡尔曼滤波已{state_text}")
+            except Exception:
+                pass
             
         except Exception as e:
             logger.warning(f"无法启动 AOA 工作线程: {e}")
@@ -707,6 +704,30 @@ class MainWindow(QMainWindow):
     def _on_aoa_frame_received(self, frame_info: dict):
         """处理接收到的 AOA 帧"""
         self.aoa_widget.add_frame(frame_info)
+        
+        # 保存最新的滤波坐标用于 BEACON 全局坐标计算
+        if 'filtered_x' in frame_info and 'filtered_y' in frame_info:
+            # 获取置信度
+            confidence = frame_info.get('filter_confidence', frame_info.get('confidence', 0.0))
+            
+            # 检查置信度是否达到阈值
+            if confidence < config.BEACON_MIN_CONFIDENCE:
+                logger.warning(f"⚠️ Beacon数据置信度过低({confidence:.2%} < {config.BEACON_MIN_CONFIDENCE:.2%})，已过滤")
+                logger.debug(f"   被过滤的数据: x={frame_info['filtered_x']:.3f}m, y={frame_info['filtered_y']:.3f}m")
+                return  # 丢弃低置信度数据
+            
+            # 置信度达标，保存数据
+            self.latest_filtered_beacon = {
+                'm_filter_x': frame_info['filtered_x'],
+                'm_filter_y': frame_info['filtered_y'],
+                'confidence': confidence,
+                'tag_id': frame_info.get('tag_id', 1)
+            }
+            logger.info(f"✅ 接受Beacon数据: x={self.latest_filtered_beacon['m_filter_x']:.3f}m, "
+                       f"y={self.latest_filtered_beacon['m_filter_y']:.3f}m, 置信度={confidence:.2%}")
+            
+            # 如果已经有小车位置信息，立即重新计算并更新 beacon 全局坐标
+            self._update_beacon_global_position()
     
     def _on_aoa_position_updated(self, position: dict):
         """处理位置更新"""
@@ -820,50 +841,110 @@ class MainWindow(QMainWindow):
         return maps
     
     def _transform_local_to_global(self, local_x: float, local_y: float, 
-                                   anchor_x: float, anchor_y: float, 
+                                   m_anchor_x: float, m_anchor_y: float, 
                                    anchor_theta: float) -> dict:
         """
-        将 Anchor 局部坐标转换为全局坐标
+        将 Beacon 在 Anchor 坐标系中的局部坐标转换为全局坐标
         
         坐标系说明：
-        - Anchor 局部坐标系：Y 轴正前方，X 轴右侧（右手规则）
-        - anchor_theta: Anchor 的全局朝向（弧度），0 向右（X轴正向）
+        - Anchor 局部坐标系：以 Anchor (小车) 为原点
+          * Y 轴：车头前方（与小车朝向 theta 一致）
+          * X 轴：车体右侧（垂直于朝向，右手系）
+        - 小车全局位置：/tracked_pose 中的 pos (m_x, m_y)
+        - anchor_theta: 小车的全局朝向（弧度），/tracked_pose 中的 ori
         
         变换公式：
-        x_global = x_anchor + local_x * cos(theta) - local_y * sin(theta)
-        y_global = y_anchor + local_x * sin(theta) + local_y * cos(theta)
+        - 前方向量（Y轴）：(cos(θ), sin(θ))
+        - 右侧向量（X轴）：(sin(θ), -cos(θ))  # 注意：右手系，Y轴逆时针转90°到X轴
+        
+        Beacon全局位置 = 小车位置 + local_y * 前方向量 + local_x * 右侧向量
+        
+        即：
+        m_x_global = m_anchor_x + local_y * cos(theta) + local_x * sin(theta)
+        m_y_global = m_anchor_y + local_y * sin(theta) - local_x * cos(theta)
         
         Args:
-            local_x: Anchor 局部坐标 X（米）
-            local_y: Anchor 局部坐标 Y（米）
-            anchor_x: Anchor 全局位置 X（米）
-            anchor_y: Anchor 全局位置 Y（米）
-            anchor_theta: Anchor 全局朝向（弧度）
+            local_x: Beacon 在 Anchor 坐标系中的 X 坐标（米，车体右侧为正）
+            local_y: Beacon 在 Anchor 坐标系中的 Y 坐标（米，车头前方为正）
+            m_anchor_x: 小车在全局坐标系中的 X 坐标（米）
+            m_anchor_y: 小车在全局坐标系中的 Y 坐标（米）
+            anchor_theta: 小车的全局朝向（弧度）
         
         Returns:
-            {'x': float, 'y': float} - 全局坐标
+            {'m_x': float, 'm_y': float} - Beacon 在全局坐标系中的位置（米）
         """
         import math
         
-        # 计算旋转矩阵
+        # 计算旋转矩阵的三角函数
         cos_theta = math.cos(anchor_theta)
         sin_theta = math.sin(anchor_theta)
         
-        # 应用旋转和平移
-        x_global = anchor_x + local_x * cos_theta - local_y * sin_theta
-        y_global = anchor_y + local_x * sin_theta + local_y * cos_theta
+        # 应用坐标变换
+        # 前方分量：local_y * (cos_theta, sin_theta)
+        # 右侧分量：local_x * (sin_theta, -cos_theta)
+        m_x_global = m_anchor_x + local_y * cos_theta + local_x * sin_theta
+        m_y_global = m_anchor_y + local_y * sin_theta - local_x * cos_theta
+        
+        # 进行0.01m精度处理，降低漂移
+        m_x_global = round(m_x_global, 2)
+        m_y_global = round(m_y_global, 2)
         
         return {
-            'x': x_global,
-            'y': y_global
+            'm_x': m_x_global,
+            'm_y': m_y_global
         }
+    
+    def _update_beacon_global_position(self):
+        """
+        根据最新的 beacon 局部坐标和小车位置，计算并更新 beacon 全局坐标
+        这个方法会在以下情况被调用：
+        1. 收到新的 AOA 数据（beacon 局部坐标更新）
+        2. 收到新的 tracked_pose 数据（小车位置更新）
+        """
+        # 检查是否有必要的数据
+        if self.latest_filtered_beacon is None or self.latest_tracked_pose is None:
+            return
+        
+        beacon_local = self.latest_filtered_beacon
+        pose_data = self.latest_tracked_pose
+        
+        # 计算全局坐标
+        beacon_global = self._transform_local_to_global(
+            local_x=beacon_local['m_filter_x'],
+            local_y=beacon_local['m_filter_y'],
+            m_anchor_x=pose_data['pos'][0],
+            m_anchor_y=pose_data['pos'][1],
+            anchor_theta=pose_data['ori']
+        )
+        
+        # 保存全局坐标
+        self.beacon_global_position = {
+            'm_x': beacon_global['m_x'],
+            'm_y': beacon_global['m_y'],
+            'confidence': beacon_local['confidence'],
+            'tag_id': beacon_local['tag_id']
+        }
+        
+        logger.debug(f"🔄 Beacon全局位置已更新: ({beacon_global['m_x']:.2f}, {beacon_global['m_y']:.2f})m")
+        
+        # 发布 /globe_beacon 话题
+        self._publish_globe_beacon(self.beacon_global_position)
+        
+        # 实时更新地图显示
+        if self.map_viewer_dialog and self.map_viewer_dialog.isVisible():
+            logger.debug(f"🗺️ 更新对话框中的beacon位置")
+            self.map_viewer_dialog.update_beacon_position(self.beacon_global_position)
+            
+        if self.map_viewer_widget:
+            logger.debug(f"🗺️ 更新选项卡中的beacon位置")
+            self.map_viewer_widget.update_beacon_position(self.beacon_global_position)
     
     def _publish_globe_beacon(self, beacon_data: dict):
         """
         发布 /globe_beacon 话题（内部信号，不经过 WebSocket）
         
         Args:
-            beacon_data: 包含 {'x': float, 'y': float, 'confidence': float, 'tag_id': int}
+            beacon_data: 包含 {'m_x': float, 'm_y': float, 'confidence': float, 'tag_id': int}
         """
         if not self.ws_subscriber:
             return
@@ -872,8 +953,8 @@ class MainWindow(QMainWindow):
         message = {
             'topic': '/globe_beacon',
             'tag_id': beacon_data.get('tag_id', 1),
-            'x': beacon_data.get('x', 0.0),
-            'y': beacon_data.get('y', 0.0),
+            'm_x': beacon_data.get('m_x', 0.0),
+            'm_y': beacon_data.get('m_y', 0.0),
             'confidence': beacon_data.get('confidence', 0.0),
             'timestamp': time.time()
         }
@@ -882,6 +963,6 @@ class MainWindow(QMainWindow):
         self._topic_relay.topic_message.emit('/globe_beacon', message)
         
         # 同时记录日志
-        logger.debug(f"发布 /globe_beacon: x={message['x']:.2f}, y={message['y']:.2f}, "
+        logger.debug(f"发布 /globe_beacon: x={message['m_x']:.2f}, y={message['m_y']:.2f}, "
                     f"confidence={message['confidence']:.2f}")
 

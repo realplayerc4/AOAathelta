@@ -165,9 +165,10 @@ class KalmanFilter:
             (x, y, info_dict) - 滤波后的坐标和信息字典
         """
         # 极坐标转笛卡尔坐标
+        # 车辆坐标系：Y轴=前方, X轴=右侧
         angle_rad = math.radians(angle_deg)
-        x = distance * math.cos(angle_rad)
-        y = distance * math.sin(angle_rad)
+        y = distance * math.cos(angle_rad)   # 前方（Y轴）
+        x = -distance * math.sin(angle_rad)  # 右侧（X轴，负号因角度逆时针）
         
         # 首次测量时初始化
         if not self.initialized:

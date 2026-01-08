@@ -19,3 +19,6 @@ TOPICS_FILE = "topics.txt"  # 监听的话题列表文件，每行一个话题
 WINDOW_TITLE = "AMR 设备监控系统"
 WINDOW_WIDTH = 1200
 WINDOW_HEIGHT = 700
+
+# Beacon 数据过滤配置
+BEACON_MIN_CONFIDENCE = 0.65  # 最小置信度阈值（0.0-1.0），低于此值的数据将被过滤

@@ -72,7 +72,8 @@ class AOAProtocolParser:
             frame = AOAFrame.from_bytes(data, frame_id=self.frame_count)
             
             if not frame.is_valid:
-                logger.warning(f"帧 #{self.frame_count} 校验和验证失败")
+                # 高频数据下偶尔校验失败属正常，降级为调试日志以减少噪音
+                logger.debug(f"帧 #{self.frame_count} 校验和验证失败")
                 with self.lock:
                     self.error_count += 1
                 return None

@@ -131,10 +131,11 @@ class AOAWorker(QThread):
                 frame_info['velocity_y'] = filter_info.get('velocity_y', 0.0)
             else:
                 # 不使用滤波，直接转换极坐标
+                # 车辆坐标系：Y轴=前方, X轴=右侧
                 import math
                 angle_rad = math.radians(angle)
-                filtered_x = distance * math.cos(angle_rad)
-                filtered_y = distance * math.sin(angle_rad)
+                filtered_y = distance * math.cos(angle_rad)   # 前方（Y轴）
+                filtered_x = -distance * math.sin(angle_rad)  # 右侧（X轴，负号因角度逆时针）
                 
                 # 创建位置信息
                 position = AOAPosition(
@@ -193,6 +194,40 @@ class AOAWorker(QThread):
         if self.reader:
             return self.reader.get_statistics()
         return {'error': 'Reader not initialized'}
+    
+    def get_filtered_beacon_coordinates(self, tag_id: int = 1) -> dict:
+        """
+        获取指定标签的当前滤波坐标（Anchor 局部坐标系）
+        
+        Args:
+            tag_id: 标签 ID，默认为 1
+        
+        Returns:
+            字典包含：
+            {
+                'tag_id': int,
+                'x': float,  # Anchor 局部坐标 (米)
+                'y': float,  # Anchor 局部坐标 (米)
+                'confidence': float,  # 置信度 0-1
+                'velocity_x': float,  # X 速度 (米/秒)
+                'velocity_y': float,  # Y 速度 (米/秒)
+                'acceleration_x': float,  # X 加速度 (米/秒²)
+                'acceleration_y': float,  # Y 加速度 (米/秒²)
+                'initialized': bool  # 滤波器是否已初始化
+            }
+        """
+        state = self.kalman_filter.get_filter_state(tag_id)
+        return {
+            'tag_id': tag_id,
+            'x': state.get('x', 0.0),
+            'y': state.get('y', 0.0),
+            'confidence': state.get('confidence', 0.0),
+            'velocity_x': state.get('vx', 0.0),
+            'velocity_y': state.get('vy', 0.0),
+            'acceleration_x': state.get('ax', 0.0),
+            'acceleration_y': state.get('ay', 0.0),
+            'initialized': state.get('initialized', False)
+        }
 
 
 class AOADataProcessor(QThread):
@@ -334,52 +369,4 @@ class AOADataProcessor(QThread):
         """线程主循环"""
         self.is_running = True
         # 处理线程的主循环逻辑可以在这里实现
-        # 目前通过 process_aoa_position 方法进行事件驱动处理    
-    def enable_filter(self, enabled: bool = True):
-        """
-        启用或禁用卡尔曼滤波
-        
-        Args:
-            enabled: True 为启用，False 为禁用
-        """
-        self.filter_enabled = enabled
-        logger.info(f"数据处理器卡尔曼滤波器已{'启用' if enabled else '禁用'}")
-    
-    def reset_filter(self):
-        """重置卡尔曼滤波器"""
-        self.kalman_filter.reset()
-        logger.info("数据处理器卡尔曼滤波器已重置")
-    
-    def get_filtered_beacon_coordinates(self, tag_id: int = 1) -> dict:
-        """
-        获取指定标签的当前滤波坐标（Anchor 局部坐标系）
-        
-        Args:
-            tag_id: 标签 ID，默认为 1
-        
-        Returns:
-            字典包含：
-            {
-                'tag_id': int,
-                'x': float,  # Anchor 局部坐标 (米)
-                'y': float,  # Anchor 局部坐标 (米)
-                'confidence': float,  # 置信度 0-1
-                'velocity_x': float,  # X 速度 (米/秒)
-                'velocity_y': float,  # Y 速度 (米/秒)
-                'acceleration_x': float,  # X 加速度 (米/秒²)
-                'acceleration_y': float,  # Y 加速度 (米/秒²)
-                'initialized': bool  # 滤波器是否已初始化
-            }
-        """
-        state = self.kalman_filter.get_filter_state(tag_id)
-        return {
-            'tag_id': tag_id,
-            'x': state.get('x', 0.0),
-            'y': state.get('y', 0.0),
-            'confidence': state.get('confidence', 0.0),
-            'velocity_x': state.get('vx', 0.0),
-            'velocity_y': state.get('vy', 0.0),
-            'acceleration_x': state.get('ax', 0.0),
-            'acceleration_y': state.get('ay', 0.0),
-            'initialized': state.get('initialized', False)
-        }
+        # 目前通过 process_aoa_position 方法进行事件驱动处理

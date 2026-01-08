@@ -5,6 +5,7 @@ import json
 import threading
 import time
 from typing import Callable, Iterable, Optional
+from concurrent.futures import ThreadPoolExecutor
 
 import websocket
 
@@ -28,6 +29,8 @@ class TopicSubscriber:
         self._stop = False
         self._thread: Optional[threading.Thread] = None
         self._ws: Optional[websocket.WebSocketApp] = None
+        # 使用线程池处理消息回调，避免阻塞WebSocket线程
+        self._callback_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ws_callback_")
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -45,6 +48,8 @@ class TopicSubscriber:
                 pass
         if self._thread:
             self._thread.join(timeout=1.0)
+        # 关闭线程池
+        self._callback_executor.shutdown(wait=False)
 
     def enable_topic(self, topic: str) -> None:
         """Enable subscription to a topic."""
@@ -106,12 +111,21 @@ class TopicSubscriber:
         if isinstance(data, dict):
             topic = data.get("topic")
         if topic and topic in self.topics:
+            # 在线程池中执行回调，避免阻塞WebSocket线程
             try:
-                self.on_message(topic, payload)
-            except Exception:
-                # Avoid crashing the thread on callback errors
+                self._callback_executor.submit(self._execute_callback, topic, payload)
+            except Exception as e:
                 if self.on_error:
-                    self.on_error("callback error")
+                    self.on_error(f"callback submit error: {e}")
+
+    def _execute_callback(self, topic: str, payload):
+        """在独立线程中执行回调"""
+        try:
+            self.on_message(topic, payload)
+        except Exception:
+            # Avoid crashing the thread on callback errors
+            if self.on_error:
+                self.on_error("callback error")
 
     def _on_raw_error(self, ws, error):
         if self.on_error:

@@ -90,10 +90,11 @@ class AOADataWidget(QWidget):
         
         # 创建表格
         self.data_table = QTableWidget()
-        self.data_table.setColumnCount(8)
+        self.data_table.setColumnCount(10)
         self.data_table.setHorizontalHeaderLabels([
             "帧#", "时间戳", "ANCHER ID", "TAG ID",
-            "距离 (m)", "角度 (°)", "电压 (mV)", "有效性"
+            "距离 (m)", "角度 (°)", "滤波X (m)", "滤波Y (m)",
+            "电压 (mV)", "有效性"
         ])
         self.data_table.setMaximumHeight(250)
         self.data_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -157,6 +158,10 @@ class AOADataWidget(QWidget):
             self.data_table.removeRow(0)
             row -= 1
         
+        # 获取滤波后的坐标（如果有）
+        filtered_x = frame_info.get('filtered_x', 0.0)
+        filtered_y = frame_info.get('filtered_y', 0.0)
+        
         # 填充数据
         items = [
             str(frame_info.get('frame_id', '')),
@@ -165,6 +170,8 @@ class AOADataWidget(QWidget):
             str(frame_info.get('tag_id', '')),
             f"{frame_info.get('distance_mm', 0) / 1000:.3f}",
             f"{frame_info.get('angle_degrees', 0):.2f}",
+            f"{filtered_x:.3f}",  # 滤波后的 X 坐标
+            f"{filtered_y:.3f}",  # 滤波后的 Y 坐标
             str(frame_info.get('voltage_mv', '')),
             "✓" if frame_info.get('is_valid') else "✗"
         ]
@@ -173,8 +180,15 @@ class AOADataWidget(QWidget):
             item = QTableWidgetItem(text)
             item.setFont(QFont("Courier", 10))
             
+            # 设置滤波坐标列的颜色（红色加粗表示滤波数据）
+            if col in [6, 7]:  # 滤波 X 和 Y 列
+                item.setForeground(QColor("red"))
+                font = QFont("Courier", 10)
+                font.setBold(True)
+                item.setFont(font)
+            
             # 设置有效性列的颜色
-            if col == 7:  # 有效性列
+            if col == 9:  # 有效性列（现在是第10列，索引9）
                 if text == "✓":
                     item.setForeground(QColor("green"))
                 else:

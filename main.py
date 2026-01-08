@@ -2,9 +2,19 @@
 AMR 设备监控系统 - 主入口
 """
 import sys
+import logging
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import Qt
 from ui.main_window import MainWindow
+
+# 配置日志记录
+logging.basicConfig(
+    level=logging.INFO,  # 设置为INFO级别以查看标注信息
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout),  # 输出到终端
+    ]
+)
 
 
 def main():
