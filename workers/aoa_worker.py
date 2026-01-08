@@ -349,3 +349,37 @@ class AOADataProcessor(QThread):
         """重置卡尔曼滤波器"""
         self.kalman_filter.reset()
         logger.info("数据处理器卡尔曼滤波器已重置")
+    
+    def get_filtered_beacon_coordinates(self, tag_id: int = 1) -> dict:
+        """
+        获取指定标签的当前滤波坐标（Anchor 局部坐标系）
+        
+        Args:
+            tag_id: 标签 ID，默认为 1
+        
+        Returns:
+            字典包含：
+            {
+                'tag_id': int,
+                'x': float,  # Anchor 局部坐标 (米)
+                'y': float,  # Anchor 局部坐标 (米)
+                'confidence': float,  # 置信度 0-1
+                'velocity_x': float,  # X 速度 (米/秒)
+                'velocity_y': float,  # Y 速度 (米/秒)
+                'acceleration_x': float,  # X 加速度 (米/秒²)
+                'acceleration_y': float,  # Y 加速度 (米/秒²)
+                'initialized': bool  # 滤波器是否已初始化
+            }
+        """
+        state = self.kalman_filter.get_filter_state(tag_id)
+        return {
+            'tag_id': tag_id,
+            'x': state.get('x', 0.0),
+            'y': state.get('y', 0.0),
+            'confidence': state.get('confidence', 0.0),
+            'velocity_x': state.get('vx', 0.0),
+            'velocity_y': state.get('vy', 0.0),
+            'acceleration_x': state.get('ax', 0.0),
+            'acceleration_y': state.get('ay', 0.0),
+            'initialized': state.get('initialized', False)
+        }

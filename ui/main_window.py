@@ -2,6 +2,7 @@
 主窗口 - AMR 设备监控系统
 """
 import logging
+import time
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QTextEdit, QTabWidget, QMessageBox,
@@ -49,6 +50,7 @@ class MainWindow(QMainWindow):
         self.map_viewer_dialog = None  # 地图查看器对话框
         self.aoa_position_viewer = None  # AOA 位置查看器
         self.map_receive_count = 0  # 地图接收计数
+        self.beacon_global_position = None  # 保存 beacon 全局坐标
         self._setup_ui()
     
     def _setup_ui(self):
@@ -585,9 +587,36 @@ class MainWindow(QMainWindow):
                             3000
                         )
                         
+                        # 获取卡尔曼滤波后的 beacon 坐标（局部坐标）
+                        if self.aoa_worker:
+                            beacon_local = self.aoa_worker.get_filtered_beacon_coordinates(tag_id=1)
+                            if beacon_local.get('initialized'):
+                                # 计算全局坐标
+                                beacon_global = self._transform_local_to_global(
+                                    local_x=beacon_local['x'],
+                                    local_y=beacon_local['y'],
+                                    anchor_x=pose_data['pos'][0],
+                                    anchor_y=pose_data['pos'][1],
+                                    anchor_theta=pose_data['ori']
+                                )
+                                
+                                # 保存全局坐标用于地图显示
+                                self.beacon_global_position = {
+                                    'x': beacon_global['x'],
+                                    'y': beacon_global['y'],
+                                    'confidence': beacon_local['confidence'],
+                                    'tag_id': beacon_local['tag_id']
+                                }
+                                
+                                # 发布 /globe_beacon 话题
+                                self._publish_globe_beacon(self.beacon_global_position)
+                        
                         # 如果地图查看器已打开，更新追踪位置
                         if self.map_viewer_dialog and self.map_viewer_dialog.isVisible():
                             self.map_viewer_dialog.update_tracked_pose(pose_data)
+                            # 同时更新 beacon 位置
+                            if hasattr(self, 'beacon_global_position'):
+                                self.map_viewer_dialog.update_beacon_position(self.beacon_global_position)
                     elif isinstance(pos, dict) and "x" in pos and "y" in pos:
                         pose_data = {
                             "pos": [float(pos["x"]), float(pos["y"])],
@@ -601,9 +630,36 @@ class MainWindow(QMainWindow):
                             3000
                         )
                         
+                        # 获取卡尔曼滤波后的 beacon 坐标（局部坐标）
+                        if self.aoa_worker:
+                            beacon_local = self.aoa_worker.get_filtered_beacon_coordinates(tag_id=1)
+                            if beacon_local.get('initialized'):
+                                # 计算全局坐标
+                                beacon_global = self._transform_local_to_global(
+                                    local_x=beacon_local['x'],
+                                    local_y=beacon_local['y'],
+                                    anchor_x=pose_data['pos'][0],
+                                    anchor_y=pose_data['pos'][1],
+                                    anchor_theta=pose_data['ori']
+                                )
+                                
+                                # 保存全局坐标用于地图显示
+                                self.beacon_global_position = {
+                                    'x': beacon_global['x'],
+                                    'y': beacon_global['y'],
+                                    'confidence': beacon_local['confidence'],
+                                    'tag_id': beacon_local['tag_id']
+                                }
+                                
+                                # 发布 /globe_beacon 话题
+                                self._publish_globe_beacon(self.beacon_global_position)
+                        
                         # 如果地图查看器已打开，更新追踪位置
                         if self.map_viewer_dialog and self.map_viewer_dialog.isVisible():
                             self.map_viewer_dialog.update_tracked_pose(pose_data)
+                            # 同时更新 beacon 位置
+                            if hasattr(self, 'beacon_global_position'):
+                                self.map_viewer_dialog.update_beacon_position(self.beacon_global_position)
             except (ValueError, KeyError, TypeError) as e:
                 # 数据格式错误，跳过
                 pass
@@ -762,3 +818,70 @@ class MainWindow(QMainWindow):
                     maps.append(Map.from_dict(map_data))
         
         return maps
+    
+    def _transform_local_to_global(self, local_x: float, local_y: float, 
+                                   anchor_x: float, anchor_y: float, 
+                                   anchor_theta: float) -> dict:
+        """
+        将 Anchor 局部坐标转换为全局坐标
+        
+        坐标系说明：
+        - Anchor 局部坐标系：Y 轴正前方，X 轴右侧（右手规则）
+        - anchor_theta: Anchor 的全局朝向（弧度），0 向右（X轴正向）
+        
+        变换公式：
+        x_global = x_anchor + local_x * cos(theta) - local_y * sin(theta)
+        y_global = y_anchor + local_x * sin(theta) + local_y * cos(theta)
+        
+        Args:
+            local_x: Anchor 局部坐标 X（米）
+            local_y: Anchor 局部坐标 Y（米）
+            anchor_x: Anchor 全局位置 X（米）
+            anchor_y: Anchor 全局位置 Y（米）
+            anchor_theta: Anchor 全局朝向（弧度）
+        
+        Returns:
+            {'x': float, 'y': float} - 全局坐标
+        """
+        import math
+        
+        # 计算旋转矩阵
+        cos_theta = math.cos(anchor_theta)
+        sin_theta = math.sin(anchor_theta)
+        
+        # 应用旋转和平移
+        x_global = anchor_x + local_x * cos_theta - local_y * sin_theta
+        y_global = anchor_y + local_x * sin_theta + local_y * cos_theta
+        
+        return {
+            'x': x_global,
+            'y': y_global
+        }
+    
+    def _publish_globe_beacon(self, beacon_data: dict):
+        """
+        发布 /globe_beacon 话题（内部信号，不经过 WebSocket）
+        
+        Args:
+            beacon_data: 包含 {'x': float, 'y': float, 'confidence': float, 'tag_id': int}
+        """
+        if not self.ws_subscriber:
+            return
+        
+        # 构建话题消息
+        message = {
+            'topic': '/globe_beacon',
+            'tag_id': beacon_data.get('tag_id', 1),
+            'x': beacon_data.get('x', 0.0),
+            'y': beacon_data.get('y', 0.0),
+            'confidence': beacon_data.get('confidence', 0.0),
+            'timestamp': time.time()
+        }
+        
+        # 通过话题中继发送信号（模拟发布）
+        self._topic_relay.topic_message.emit('/globe_beacon', message)
+        
+        # 同时记录日志
+        logger.debug(f"发布 /globe_beacon: x={message['x']:.2f}, y={message['y']:.2f}, "
+                    f"confidence={message['confidence']:.2f}")
+

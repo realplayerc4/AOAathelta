@@ -22,6 +22,7 @@ class MapViewerDialog(QDialog):
         self.last_update_time = None
         self.map_receive_count = 0
         self.tracked_pose = None  # 追踪位置数据 {"pos": [x, y], "ori": angle}
+        self.beacon_position = None  # beacon 全局坐标 {"x": float, "y": float, "confidence": float}
         self._setup_ui()
     
     def _setup_ui(self):
@@ -173,6 +174,17 @@ class MapViewerDialog(QDialog):
                       {"pos": [x, y], "ori": angle_in_radians}
         """
         self.tracked_pose = pose_data
+        self._refresh_map()
+    
+    def update_beacon_position(self, beacon_data: dict):
+        """
+        更新 beacon（信标）全局坐标位置
+        
+        Args:
+            beacon_data: 包含 beacon 位置和置信度的字典
+                        {"x": float, "y": float, "confidence": float, "tag_id": int}
+        """
+        self.beacon_position = beacon_data
         self._refresh_map()
     
     def _validate_map_data(self, map_data: dict) -> tuple[bool, str]:
@@ -413,6 +425,74 @@ class MapViewerDialog(QDialog):
         
         return marked_pixmap
     
+    def _mark_beacon_on_image(self, pixmap: QPixmap, map_data: dict, beacon_data: dict) -> QPixmap:
+        """
+        在图像上标注 beacon（信标）位置（红色圆点）
+        
+        Args:
+            pixmap: 原始的图片像素图
+            map_data: 地图数据
+            beacon_data: beacon 位置数据 {"x": float, "y": float, "confidence": float}
+            
+        Returns:
+            标注后的图片像素图
+        """
+        if not beacon_data or 'x' not in beacon_data or 'y' not in beacon_data:
+            return pixmap
+        
+        resolution = map_data.get('resolution', 1)
+        origin = map_data.get('origin', [0, 0])
+        size = map_data.get('size', [0, 0])
+        
+        beacon_x = beacon_data.get('x', 0)
+        beacon_y = beacon_data.get('y', 0)
+        confidence = beacon_data.get('confidence', 1.0)
+        
+        # 计算 beacon 的像素坐标
+        pixel_x = (beacon_x - origin[0]) / resolution
+        pixel_y_from_bottom = (beacon_y - origin[1]) / resolution
+        pixel_y = size[1] - pixel_y_from_bottom  # 转换到PNG坐标系
+        
+        # 检查位置是否在图像范围内
+        if not (0 <= pixel_x < size[0] and 0 <= pixel_y < size[1]):
+            return pixmap
+        
+        marked_pixmap = QPixmap(pixmap)
+        painter = QPainter(marked_pixmap)
+        
+        # 设置红色画笔和画刷
+        red_color = QColor(255, 0, 0)  # 纯红色
+        painter.setPen(QPen(red_color, 2))
+        painter.setBrush(QBrush(red_color))
+        
+        # 根据置信度调整圆点大小（置信度越高，圆点越大）
+        # confidence: 0.0 -> 3px, 1.0 -> 8px
+        radius = int(3 + confidence * 5)
+        
+        # 绘制 beacon 圆点
+        painter.drawEllipse(
+            int(pixel_x) - radius,
+            int(pixel_y) - radius,
+            radius * 2,
+            radius * 2
+        )
+        
+        # 绘制置信度外圈（淡红色）
+        outer_color = QColor(255, 100, 100, 100)
+        painter.setPen(QPen(outer_color, 1))
+        painter.setBrush(QBrush(outer_color))
+        outer_radius = int(radius + 3)
+        painter.drawEllipse(
+            int(pixel_x) - outer_radius,
+            int(pixel_y) - outer_radius,
+            outer_radius * 2,
+            outer_radius * 2
+        )
+        
+        painter.end()
+        
+        return marked_pixmap
+    
     def _refresh_map(self):
         """刷新地图显示"""
         if not self.current_map_data:
@@ -515,6 +595,10 @@ class MapViewerDialog(QDialog):
                         # 在图像上标注追踪位置和朝向
                         if self.tracked_pose:
                             pixmap = self._mark_tracked_pose_on_image(pixmap, self.current_map_data, self.tracked_pose)
+                        
+                        # 在图像上标注 beacon 位置（红色圆点）
+                        if self.beacon_position:
+                            pixmap = self._mark_beacon_on_image(pixmap, self.current_map_data, self.beacon_position)
                         
                         # 缩放图片以适应窗口（保持宽高比）
                         scaled_pixmap = pixmap.scaled(
