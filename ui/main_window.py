@@ -12,6 +12,7 @@ import json
 import config
 from ui.widgets.device_table import DeviceTableWidget
 from ui.widgets.map_table import MapTableWidget
+from ui.widgets.map_viewer import MapViewerDialog
 from workers.api_worker import APIWorker
 from workers.map_worker import MapAPIWorker
 from models.device import Device
@@ -37,6 +38,9 @@ class MainWindow(QMainWindow):
         self._topic_relay = _TopicRelay()
         self._topic_relay.topic_message.connect(self._on_topic_message_ui)
         self._topic_relay.topic_error.connect(self._on_topic_error_ui)
+        self.latest_map_data = None  # 保存最新的地图数据
+        self.map_viewer_dialog = None  # 地图查看器对话框
+        self.map_receive_count = 0  # 地图接收计数
         self._setup_ui()
     
     def _setup_ui(self):
@@ -139,8 +143,35 @@ class MainWindow(QMainWindow):
             }
         """)
         
+        # 显示实时地图按钮
+        self.show_map_button = QPushButton("📍 显示实时地图")
+        self.show_map_button.clicked.connect(self._on_show_map_clicked)
+        self.show_map_button.setMinimumHeight(45)
+        self.show_map_button.setStyleSheet("""
+            QPushButton {
+                background-color: #FF9800;
+                color: white;
+                border: none;
+                border-radius: 5px;
+                font-size: 14px;
+                font-weight: bold;
+                padding: 10px;
+            }
+            QPushButton:hover {
+                background-color: #F57C00;
+            }
+            QPushButton:pressed {
+                background-color: #E65100;
+            }
+            QPushButton:disabled {
+                background-color: #cccccc;
+                color: #666666;
+            }
+        """)
+        
         control_layout.addWidget(self.fetch_button, 2)
         control_layout.addWidget(self.fetch_maps_button, 2)
+        control_layout.addWidget(self.show_map_button, 2)
         control_layout.addWidget(self.clear_button, 1)
         
         main_layout.addLayout(control_layout)
@@ -363,6 +394,33 @@ class MainWindow(QMainWindow):
         """重置获取地图按钮状态"""
         self.fetch_maps_button.setEnabled(True)
         self.fetch_maps_button.setText("🗺️ 获取地图列表")
+    
+    def _on_show_map_clicked(self):
+        """处理显示实时地图按钮点击事件"""
+        if not self.latest_map_data:
+            QMessageBox.information(
+                self,
+                "无地图数据",
+                "尚未接收到地图数据。\n\n"
+                "请确保：\n"
+                "1. WebSocket 连接正常\n"
+                "2. /map 话题已在 topics.txt 中配置\n"
+                "3. 设备正在发布地图数据\n\n"
+                f"已接收地图次数: {self.map_receive_count}"
+            )
+            return
+        
+        # 创建或显示地图查看器
+        if not self.map_viewer_dialog:
+            self.map_viewer_dialog = MapViewerDialog(self)
+        
+        self.map_viewer_dialog.update_map(self.latest_map_data)
+        self.map_viewer_dialog.show()
+        self.map_viewer_dialog.raise_()
+        self.map_viewer_dialog.activateWindow()
+        
+        # 更新按钮文本显示接收次数
+        self.show_map_button.setText(f"📍 显示实时地图 ({self.map_receive_count})")
 
     # --- WebSocket topic subscription ---
     def _start_topic_subscription(self):
@@ -386,11 +444,34 @@ class MainWindow(QMainWindow):
 
     def _on_topic_message_ui(self, topic: str, payload):
         """主线程处理话题消息"""
+        # 如果是地图话题，保存地图数据
+        if topic == "/map":
+            self.latest_map_data = payload
+            self.map_receive_count += 1
+            
+            # 提取关键信息用于状态显示
+            resolution = payload.get('resolution', 'N/A')
+            size = payload.get('size', [0, 0])
+            data_size = len(payload.get('data', '')) * 3 // 4 // 1024  # KB
+            
+            # 更新状态栏显示更详细的地图信息
+            self.status_bar.showMessage(
+                f"🗺️ 地图已更新 (#{self.map_receive_count}) - "
+                f"{size[0]}×{size[1]}px, {resolution}m/px, {data_size}KB",
+                5000
+            )
+            
+            # 如果地图查看器已打开，自动更新
+            if self.map_viewer_dialog and self.map_viewer_dialog.isVisible():
+                self.map_viewer_dialog.update_map(payload)
+        else:
+            # 其他话题的正常处理
+            self.status_bar.showMessage(f"WS {topic} 已更新", 2000)
+        
         try:
             text = json.dumps(payload, ensure_ascii=False)
         except Exception:
             text = str(payload)
-        self.status_bar.showMessage(f"WS {topic} 已更新", 2000)
         self._append_live_log(topic, text)
 
     def _on_topic_error_ui(self, message: str):
