@@ -1,2 +1,3 @@
 /tracked_pose
 /battery_state
+/map
