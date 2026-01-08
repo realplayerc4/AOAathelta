@@ -1,6 +1,7 @@
 """
 主窗口 - AMR 设备监控系统
 """
+import logging
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QTextEdit, QTabWidget, QMessageBox,
@@ -13,12 +14,17 @@ import config
 from ui.widgets.device_table import DeviceTableWidget
 from ui.widgets.map_table import MapTableWidget
 from ui.widgets.map_viewer import MapViewerDialog
+from ui.widgets.aoa_viewer import AOADataWidget, AOAPositionViewer
 from workers.api_worker import APIWorker
 from workers.map_worker import MapAPIWorker
+from workers.aoa_worker import AOAWorker
 from models.device import Device
 from models.map import Map
 from core.ws_subscriber import TopicSubscriber
 from utils.config_loader import load_topics_from_file
+
+
+logger = logging.getLogger(__name__)
 
 
 class _TopicRelay(QObject):
@@ -34,12 +40,14 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.api_worker = None
         self.map_worker = None
+        self.aoa_worker = None
         self.ws_subscriber = None
         self._topic_relay = _TopicRelay()
         self._topic_relay.topic_message.connect(self._on_topic_message_ui)
         self._topic_relay.topic_error.connect(self._on_topic_error_ui)
         self.latest_map_data = None  # 保存最新的地图数据
         self.map_viewer_dialog = None  # 地图查看器对话框
+        self.aoa_position_viewer = None  # AOA 位置查看器
         self.map_receive_count = 0  # 地图接收计数
         self._setup_ui()
     
@@ -170,9 +178,32 @@ class MainWindow(QMainWindow):
         """)
         
         control_layout.addWidget(self.fetch_button, 2)
+        control_layout.addWidget(self.clear_button, 1)
         control_layout.addWidget(self.fetch_maps_button, 2)
         control_layout.addWidget(self.show_map_button, 2)
-        control_layout.addWidget(self.clear_button, 1)
+        
+        # AOA 滤波控制按钮
+        self.filter_toggle_button = QPushButton("🔬 禁用卡尔曼滤波")
+        self.filter_toggle_button.clicked.connect(self._on_filter_toggle_clicked)
+        self.filter_toggle_button.setMinimumHeight(45)
+        self.filter_toggle_button.setStyleSheet("""
+            QPushButton {
+                background-color: #9C27B0;
+                color: white;
+                border: none;
+                border-radius: 5px;
+                font-size: 14px;
+                font-weight: bold;
+                padding: 10px;
+            }
+            QPushButton:hover {
+                background-color: #7B1FA2;
+            }
+            QPushButton:pressed {
+                background-color: #6A1B9A;
+            }
+        """)
+        control_layout.addWidget(self.filter_toggle_button, 2)
         
         main_layout.addLayout(control_layout)
         
@@ -204,6 +235,10 @@ class MainWindow(QMainWindow):
         self.map_table = MapTableWidget()
         self.tab_widget.addTab(self.map_table, "🗺️ 地图列表")
         
+        # AOA 数据标签页
+        self.aoa_widget = AOADataWidget()
+        self.tab_widget.addTab(self.aoa_widget, "📡 AOA 数据")
+        
         # 原始JSON视图标签页
         self.json_text = QTextEdit()
         self.json_text.setReadOnly(True)
@@ -230,6 +265,9 @@ class MainWindow(QMainWindow):
         
         # 启动 WebSocket 话题订阅
         self._start_topic_subscription()
+        
+        # 启动 AOA 数据接收
+        self._start_aoa_worker()
     
     def _on_fetch_clicked(self):
         """处理"获取设备数据"按钮点击事件"""
@@ -421,6 +459,62 @@ class MainWindow(QMainWindow):
         
         # 更新按钮文本显示接收次数
         self.show_map_button.setText(f"📍 显示实时地图 ({self.map_receive_count})")
+    
+    def _on_filter_toggle_clicked(self):
+        """处理卡尔曼滤波启用/禁用按钮点击事件"""
+        if not self.aoa_worker:
+            QMessageBox.warning(
+                self,
+                "AOA 工作线程未启动",
+                "AOA 工作线程尚未初始化。"
+            )
+            return
+        
+        # 根据当前状态切换
+        if self.aoa_worker.filter_enabled:
+            # 禁用滤波
+            self.aoa_worker.enable_filter(False)
+            self.filter_toggle_button.setText("🔬 启用卡尔曼滤波")
+            self.filter_toggle_button.setStyleSheet("""
+                QPushButton {
+                    background-color: #607D8B;
+                    color: white;
+                    border: none;
+                    border-radius: 5px;
+                    font-size: 14px;
+                    font-weight: bold;
+                    padding: 10px;
+                }
+                QPushButton:hover {
+                    background-color: #455A64;
+                }
+                QPushButton:pressed {
+                    background-color: #37474F;
+                }
+            """)
+            self.aoa_widget.add_status_message("✅ 卡尔曼滤波已禁用")
+        else:
+            # 启用滤波
+            self.aoa_worker.enable_filter(True)
+            self.filter_toggle_button.setText("🔬 禁用卡尔曼滤波")
+            self.filter_toggle_button.setStyleSheet("""
+                QPushButton {
+                    background-color: #9C27B0;
+                    color: white;
+                    border: none;
+                    border-radius: 5px;
+                    font-size: 14px;
+                    font-weight: bold;
+                    padding: 10px;
+                }
+                QPushButton:hover {
+                    background-color: #7B1FA2;
+                }
+                QPushButton:pressed {
+                    background-color: #6A1B9A;
+                }
+            """)
+            self.aoa_widget.add_status_message("✅ 卡尔曼滤波已启用")
 
     # --- WebSocket topic subscription ---
     def _start_topic_subscription(self):
@@ -535,10 +629,51 @@ class MainWindow(QMainWindow):
         truncated = existing[:8000]  # 避免文本过长
         self.json_text.setPlainText(prefix + truncated)
 
+    # --- AOA 工作线程 ---
+    def _start_aoa_worker(self):
+        """启动 AOA 数据接收工作线程"""
+        try:
+            self.aoa_worker = AOAWorker(port="/dev/ttyCH343USB0", baudrate=921600)
+            
+            # 连接信号
+            self.aoa_worker.frame_received.connect(self._on_aoa_frame_received)
+            self.aoa_worker.position_updated.connect(self._on_aoa_position_updated)
+            self.aoa_worker.statistics_updated.connect(self._on_aoa_statistics_updated)
+            self.aoa_worker.status_changed.connect(self._on_aoa_status_changed)
+            self.aoa_worker.error.connect(self._on_aoa_error)
+            
+            # 启动工作线程
+            self.aoa_worker.start()
+            
+        except Exception as e:
+            logger.warning(f"无法启动 AOA 工作线程: {e}")
+    
+    def _on_aoa_frame_received(self, frame_info: dict):
+        """处理接收到的 AOA 帧"""
+        self.aoa_widget.add_frame(frame_info)
+    
+    def _on_aoa_position_updated(self, position: dict):
+        """处理位置更新"""
+        logger.debug(f"AOA 位置更新: {position}")
+    
+    def _on_aoa_statistics_updated(self, stats: dict):
+        """处理统计信息更新"""
+        self.aoa_widget.update_statistics(stats)
+    
+    def _on_aoa_status_changed(self, status: str):
+        """处理状态变化"""
+        self.aoa_widget.update_status(status)
+    
+    def _on_aoa_error(self, error_msg: str):
+        """处理 AOA 错误"""
+        logger.error(f"AOA 错误: {error_msg}")
+
     def closeEvent(self, event):
         """窗口关闭时清理后台线程"""
         if self.ws_subscriber:
             self.ws_subscriber.stop()
+        if self.aoa_worker:
+            self.aoa_worker.stop()
         super().closeEvent(event)
     
     def _parse_devices(self, data: dict) -> list[Device]:
