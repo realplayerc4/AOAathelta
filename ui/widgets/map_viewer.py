@@ -504,7 +504,7 @@ class MapViewerDialog(QDialog):
         logger.info(f"🔴 Beacon位置标注:")
         logger.info(f"   物理坐标: ({beacon_x:.2f}, {beacon_y:.2f})m, 置信度: {confidence:.2f}")
         logger.info(f"   地图范围: X[{map_x_min:.2f}, {map_x_max:.2f}]m, Y[{map_y_min:.2f}, {map_y_max:.2f}]m")
-        logger.info(f"   像素坐标: ({pixel_x:.1f}, {pixel_y:.1f})px")
+        logger.info(f"   像素坐标: ({pixel_x:.2f}, {pixel_y:.2f})px")
         logger.info(f"   地图尺寸: {size[0]}x{size[1]}px, 分辨率: {resolution}m/px")
         
         # 检查位置是否在图像范围内（放宽边界，允许部分显示）
