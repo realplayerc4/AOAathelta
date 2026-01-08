@@ -464,6 +464,56 @@ class MainWindow(QMainWindow):
             # 如果地图查看器已打开，自动更新
             if self.map_viewer_dialog and self.map_viewer_dialog.isVisible():
                 self.map_viewer_dialog.update_map(payload)
+        
+        # 处理追踪位置话题
+        elif topic == "/tracked_pose":
+            try:
+                # 验证数据格式
+                if not isinstance(payload, dict):
+                    return
+                
+                # 提取位置和朝向
+                if "pos" in payload and "ori" in payload:
+                    pos = payload["pos"]
+                    ori = payload["ori"]
+                    
+                    # 验证位置格式
+                    if isinstance(pos, (list, tuple)) and len(pos) >= 2:
+                        pose_data = {
+                            "pos": [float(pos[0]), float(pos[1])],
+                            "ori": float(ori)
+                        }
+                        
+                        # 更新状态栏
+                        self.status_bar.showMessage(
+                            f"📍 AMR位置: ({pose_data['pos'][0]:.2f}, {pose_data['pos'][1]:.2f})m, "
+                            f"朝向: {pose_data['ori']:.2f}rad",
+                            3000
+                        )
+                        
+                        # 如果地图查看器已打开，更新追踪位置
+                        if self.map_viewer_dialog and self.map_viewer_dialog.isVisible():
+                            self.map_viewer_dialog.update_tracked_pose(pose_data)
+                    elif isinstance(pos, dict) and "x" in pos and "y" in pos:
+                        pose_data = {
+                            "pos": [float(pos["x"]), float(pos["y"])],
+                            "ori": float(ori)
+                        }
+                        
+                        # 更新状态栏
+                        self.status_bar.showMessage(
+                            f"📍 AMR位置: ({pose_data['pos'][0]:.2f}, {pose_data['pos'][1]:.2f})m, "
+                            f"朝向: {pose_data['ori']:.2f}rad",
+                            3000
+                        )
+                        
+                        # 如果地图查看器已打开，更新追踪位置
+                        if self.map_viewer_dialog and self.map_viewer_dialog.isVisible():
+                            self.map_viewer_dialog.update_tracked_pose(pose_data)
+            except (ValueError, KeyError, TypeError) as e:
+                # 数据格式错误，跳过
+                pass
+        
         else:
             # 其他话题的正常处理
             self.status_bar.showMessage(f"WS {topic} 已更新", 2000)

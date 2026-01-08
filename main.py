@@ -11,7 +11,7 @@ def main():
     """应用程序入口函数"""
     # 启用高DPI缩放（必须在创建QApplication之前调用）
     QApplication.setHighDpiScaleFactorRoundingPolicy(
-        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+        Qt.HighDpiScaleFactorRoundingPolicy.PassThroug装药h
     )
     
     # 创建应用实例

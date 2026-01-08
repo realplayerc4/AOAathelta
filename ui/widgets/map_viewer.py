@@ -2,6 +2,7 @@
 地图查看器 - 显示实时地图数据
 """
 import base64
+import math
 from datetime import datetime
 from io import BytesIO
 from PyQt6.QtWidgets import (
@@ -9,7 +10,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QScrollArea, QWidget, QTextEdit, QGroupBox
 )
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QPixmap, QImage
+from PyQt6.QtGui import QPixmap, QImage, QPainter, QColor, QPen, QBrush
 
 
 class MapViewerDialog(QDialog):
@@ -20,6 +21,7 @@ class MapViewerDialog(QDialog):
         self.current_map_data = None
         self.last_update_time = None
         self.map_receive_count = 0
+        self.tracked_pose = None  # 追踪位置数据 {"pos": [x, y], "ori": angle}
         self._setup_ui()
     
     def _setup_ui(self):
@@ -38,11 +40,13 @@ class MapViewerDialog(QDialog):
         self.info_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
         self.info_label.setStyleSheet("""
             QLabel {
-                background-color: #f0f0f0;
+                background-color: #263238;
+                color: #4fc3f7;
                 padding: 8px;
                 border-radius: 3px;
                 font-size: 11px;
                 font-family: monospace;
+                border: 1px solid #455a64;
             }
         """)
         status_layout.addWidget(self.info_label)
@@ -52,11 +56,12 @@ class MapViewerDialog(QDialog):
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
         self.status_label.setStyleSheet("""
             QLabel {
-                background-color: #e3f2fd;
+                background-color: #263238;
+                color: #81c784;
                 padding: 6px;
                 border-radius: 3px;
                 font-size: 10px;
-                color: #1976d2;
+                border: 1px solid #455a64;
             }
         """)
         status_layout.addWidget(self.status_label)
@@ -91,10 +96,12 @@ class MapViewerDialog(QDialog):
         self.details_text.setMaximumHeight(100)
         self.details_text.setStyleSheet("""
             QTextEdit {
-                background-color: #f5f5f5;
-                border: 1px solid #ddd;
+                background-color: #263238;
+                color: #e0e0e0;
+                border: 1px solid #455a64;
                 font-family: monospace;
                 font-size: 10px;
+                padding: 6px;
             }
         """)
         self.details_text.setPlainText("等待地图数据...")
@@ -155,6 +162,17 @@ class MapViewerDialog(QDialog):
         self.current_map_data = map_data
         self.last_update_time = datetime.now()
         self.map_receive_count += 1
+        self._refresh_map()
+    
+    def update_tracked_pose(self, pose_data: dict):
+        """
+        更新追踪位置数据
+        
+        Args:
+            pose_data: 包含位置和朝向信息的字典
+                      {"pos": [x, y], "ori": angle_in_radians}
+        """
+        self.tracked_pose = pose_data
         self._refresh_map()
     
     def _validate_map_data(self, map_data: dict) -> tuple[bool, str]:
@@ -241,6 +259,160 @@ class MapViewerDialog(QDialog):
             'pixel_count': size[0] * size[1]
         }
     
+    def _mark_origin_on_image(self, pixmap: QPixmap, map_data: dict) -> QPixmap:
+        """
+        在图像上标注坐标原点 [0, 0]
+        
+        Args:
+            pixmap: 原始的图片像素图
+            map_data: 地图数据
+            
+        Returns:
+            标注后的图片像素图
+        """
+        resolution = map_data.get('resolution', 1)
+        origin = map_data.get('origin', [0, 0])
+        size = map_data.get('size', [0, 0])
+        
+        # 计算原点 [0, 0] 的像素坐标
+        # origin 代表左下角的距离坐标
+        # 实际坐标 (0, 0) 相对于左下角的像素位置
+        origin_x_pixel = -origin[0] / resolution  # 从左边缘算起的像素位置
+        origin_y_pixel_from_bottom = -origin[1] / resolution  # 从下边缘算起的像素位置
+        
+        # 转换为PNG坐标系（从左上角开始）
+        origin_y_pixel = size[1] - origin_y_pixel_from_bottom
+        
+        # 创建副本用于绘制
+        marked_pixmap = QPixmap(pixmap)
+        
+        # 检查原点是否在图像范围内
+        if (0 <= origin_x_pixel < size[0] and 0 <= origin_y_pixel < size[1]):
+            painter = QPainter(marked_pixmap)
+            
+            # 设置绿色画笔和笔刷
+            green_color = QColor(0, 255, 0)  # 纯绿色
+            painter.setPen(QPen(green_color, 2))
+            painter.setBrush(QBrush(green_color))
+            
+            # 绘制标注点（圆形点，半径为5像素）
+            radius = 5
+            painter.drawEllipse(
+                int(origin_x_pixel) - radius,
+                int(origin_y_pixel) - radius,
+                radius * 2,
+                radius * 2
+            )
+            
+            # 绘制十字标记
+            cross_size = 10
+            painter.setPen(QPen(green_color, 2))
+            # 水平线
+            painter.drawLine(
+                int(origin_x_pixel) - cross_size,
+                int(origin_y_pixel),
+                int(origin_x_pixel) + cross_size,
+                int(origin_y_pixel)
+            )
+            # 竖直线
+            painter.drawLine(
+                int(origin_x_pixel),
+                int(origin_y_pixel) - cross_size,
+                int(origin_x_pixel),
+                int(origin_y_pixel) + cross_size
+            )
+            
+            painter.end()
+        
+        return marked_pixmap
+    
+    def _mark_tracked_pose_on_image(self, pixmap: QPixmap, map_data: dict, pose_data: dict) -> QPixmap:
+        """
+        在图像上标注追踪位置和朝向（蓝色箭头）
+        
+        Args:
+            pixmap: 原始的图片像素图
+            map_data: 地图数据
+            pose_data: 追踪位置数据 {"pos": [x, y], "ori": angle}
+            
+        Returns:
+            标注后的图片像素图
+        """
+        if not pose_data or 'pos' not in pose_data or 'ori' not in pose_data:
+            return pixmap
+        
+        resolution = map_data.get('resolution', 1)
+        origin = map_data.get('origin', [0, 0])
+        size = map_data.get('size', [0, 0])
+        
+        pos = pose_data.get('pos', [0, 0])
+        ori = pose_data.get('ori', 0)  # 弧度
+        
+        # 计算追踪位置的像素坐标
+        # pos[0], pos[1] 是基于地图坐标系的物理坐标（米）
+        pixel_x = (pos[0] - origin[0]) / resolution
+        pixel_y_from_bottom = (pos[1] - origin[1]) / resolution
+        pixel_y = size[1] - pixel_y_from_bottom  # 转换到PNG坐标系
+        
+        # 检查位置是否在图像范围内
+        if not (0 <= pixel_x < size[0] and 0 <= pixel_y < size[1]):
+            return pixmap
+        
+        marked_pixmap = QPixmap(pixmap)
+        painter = QPainter(marked_pixmap)
+        
+        # 设置蓝色画笔
+        blue_color = QColor(0, 150, 255)  # 深蓝色
+        painter.setPen(QPen(blue_color, 2))
+        painter.setBrush(QBrush(blue_color))
+        
+        # 绘制箭头圆点
+        radius = 4
+        painter.drawEllipse(
+            int(pixel_x) - radius,
+            int(pixel_y) - radius,
+            radius * 2,
+            radius * 2
+        )
+        
+        # 绘制箭头指针
+        # ori = 0 时指向X正方向（向右）
+        # ori = π/2 时指向Y正方向（向上）
+        arrow_length = 15
+        arrow_end_x = pixel_x + arrow_length * math.cos(ori)
+        arrow_end_y = pixel_y - arrow_length * math.sin(ori)  # Y轴反向（PNG坐标系）
+        
+        painter.setPen(QPen(blue_color, 2))
+        painter.drawLine(
+            int(pixel_x),
+            int(pixel_y),
+            int(arrow_end_x),
+            int(arrow_end_y)
+        )
+        
+        # 绘制箭头头部（三角形）
+        arrow_size = 5
+        angle1 = ori + math.pi * 0.85
+        angle2 = ori - math.pi * 0.85
+        
+        point1_x = arrow_end_x + arrow_size * math.cos(angle1)
+        point1_y = arrow_end_y - arrow_size * math.sin(angle1)
+        point2_x = arrow_end_x + arrow_size * math.cos(angle2)
+        point2_y = arrow_end_y - arrow_size * math.sin(angle2)
+        
+        painter.drawLine(
+            int(arrow_end_x), int(arrow_end_y),
+            int(point1_x), int(point1_y)
+        )
+        painter.drawLine(
+            int(arrow_end_x), int(arrow_end_y),
+            int(point2_x), int(point2_y)
+        )
+        
+        painter.end()
+        
+        return marked_pixmap
+    
     def _refresh_map(self):
         """刷新地图显示"""
         if not self.current_map_data:
@@ -259,11 +431,12 @@ class MapViewerDialog(QDialog):
                 self.status_label.setText(f"错误: {validation_msg}")
                 self.status_label.setStyleSheet("""
                     QLabel {
-                        background-color: #ffebee;
+                        background-color: #b71c1c;
+                        color: #ffcdd2;
                         padding: 6px;
                         border-radius: 3px;
                         font-size: 10px;
-                        color: #c62828;
+                        border: 1px solid #c62828;
                     }
                 """)
                 self.details_text.setPlainText(f"验证失败: {validation_msg}")
@@ -297,11 +470,12 @@ class MapViewerDialog(QDialog):
             self.status_label.setText(status_text)
             self.status_label.setStyleSheet("""
                 QLabel {
-                    background-color: #e8f5e9;
+                    background-color: #1b5e20;
+                    color: #c8e6c9;
                     padding: 6px;
                     border-radius: 3px;
                     font-size: 10px;
-                    color: #2e7d32;
+                    border: 1px solid #2e7d32;
                 }
             """)
             
@@ -332,8 +506,15 @@ class MapViewerDialog(QDialog):
                     # 创建 QImage
                     qimage = QImage()
                     if qimage.loadFromData(image_data):
-                        # 转换为 QPixmap 并显示
+                        # 转换为 QPixmap
                         pixmap = QPixmap.fromImage(qimage)
+                        
+                        # 在图像上标注坐标原点
+                        pixmap = self._mark_origin_on_image(pixmap, self.current_map_data)
+                        
+                        # 在图像上标注追踪位置和朝向
+                        if self.tracked_pose:
+                            pixmap = self._mark_tracked_pose_on_image(pixmap, self.current_map_data, self.tracked_pose)
                         
                         # 缩放图片以适应窗口（保持宽高比）
                         scaled_pixmap = pixmap.scaled(
@@ -354,9 +535,9 @@ class MapViewerDialog(QDialog):
                         self.map_label.setPixmap(QPixmap())
                         self.map_label.setStyleSheet("""
                             QLabel {
-                                background-color: #ffebee;
-                                border: 2px solid #f44336;
-                                color: #c62828;
+                                background-color: #b71c1c;
+                                border: 2px solid #d32f2f;
+                                color: #ffcdd2;
                             }
                         """)
                 except Exception as img_error:
@@ -364,9 +545,9 @@ class MapViewerDialog(QDialog):
                     self.map_label.setPixmap(QPixmap())
                     self.map_label.setStyleSheet("""
                         QLabel {
-                            background-color: #ffebee;
-                            border: 2px solid #f44336;
-                            color: #c62828;
+                            background-color: #b71c1c;
+                            border: 2px solid #d32f2f;
+                            color: #ffcdd2;
                         }
                     """)
             else:
@@ -379,11 +560,12 @@ class MapViewerDialog(QDialog):
             self.status_label.setText(error_msg)
             self.status_label.setStyleSheet("""
                 QLabel {
-                    background-color: #ffebee;
+                    background-color: #b71c1c;
+                    color: #ffcdd2;
                     padding: 6px;
                     border-radius: 3px;
                     font-size: 10px;
-                    color: #c62828;
+                    border: 1px solid #c62828;
                 }
             """)
             self.details_text.setPlainText(f"解析地图数据时发生错误:\n{str(e)}")
