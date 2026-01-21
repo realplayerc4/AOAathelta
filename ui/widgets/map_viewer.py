@@ -7,7 +7,7 @@ from datetime import datetime
 from io import BytesIO
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
-    QPushButton, QScrollArea, QWidget, QTextEdit, QGroupBox
+    QPushButton, QScrollArea, QWidget, QTextEdit, QGroupBox, QSplitter
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QPixmap, QImage, QPainter, QColor, QPen, QBrush
@@ -789,66 +789,16 @@ class MapViewerWidget(QWidget):
     def _setup_ui(self):
         """初始化UI"""
         layout = QVBoxLayout(self)
-        layout.setSpacing(10)
-        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(5)
+        layout.setContentsMargins(5, 5, 5, 5)
         
-        # Beacon 坐标信息显示区域
-        beacon_group = QGroupBox("🎯 Beacon 位置信息")
-        beacon_layout = QVBoxLayout(beacon_group)
+        # 创建水平分割器，左侧为地图，右侧为信息面板
+        splitter = QSplitter(Qt.Orientation.Horizontal)
         
-        self.beacon_info_label = QLabel("等待 Beacon 数据...")
-        self.beacon_info_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        self.beacon_info_label.setStyleSheet("""
-            QLabel {
-                background-color: #1e1e1e;
-                color: #00ff00;
-                padding: 12px;
-                border-radius: 5px;
-                font-size: 13px;
-                font-family: 'Courier New', monospace;
-                border: 2px solid #00ff00;
-                font-weight: bold;
-            }
-        """)
-        beacon_layout.addWidget(self.beacon_info_label)
-        
-        layout.addWidget(beacon_group)
-        
-        # 地图状态信息组
-        status_group = QGroupBox("📊 地图状态")
-        status_layout = QVBoxLayout(status_group)
-        
-        self.info_label = QLabel("暂无地图数据")
-        self.info_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        self.info_label.setStyleSheet("""
-            QLabel {
-                background-color: #263238;
-                color: #4fc3f7;
-                padding: 6px;
-                border-radius: 3px;
-                font-size: 10px;
-                font-family: monospace;
-                border: 1px solid #455a64;
-            }
-        """)
-        status_layout.addWidget(self.info_label)
-        
-        # 更新状态标签
-        self.status_label = QLabel("等待接收地图数据...")
-        self.status_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        self.status_label.setStyleSheet("""
-            QLabel {
-                background-color: #263238;
-                color: #81c784;
-                padding: 6px;
-                border-radius: 3px;
-                font-size: 10px;
-                border: 1px solid #455a64;
-            }
-        """)
-        status_layout.addWidget(self.status_label)
-        
-        layout.addWidget(status_group)
+        # === 左侧：地图显示区域 ===
+        map_container = QWidget()
+        map_layout = QVBoxLayout(map_container)
+        map_layout.setContentsMargins(0, 0, 0, 0)
         
         # 滚动区域用于显示地图
         scroll_area = QScrollArea()
@@ -858,7 +808,7 @@ class MapViewerWidget(QWidget):
         # 地图显示标签
         self.map_label = QLabel("等待地图数据...")
         self.map_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.map_label.setMinimumSize(400, 300)
+        self.map_label.setMinimumSize(600, 500)
         self.map_label.setStyleSheet("""
             QLabel {
                 background-color: #e0e0e0;
@@ -867,7 +817,76 @@ class MapViewerWidget(QWidget):
         """)
         
         scroll_area.setWidget(self.map_label)
-        layout.addWidget(scroll_area, 1)
+        map_layout.addWidget(scroll_area)
+        
+        splitter.addWidget(map_container)
+        
+        # === 右侧：信息面板 ===
+        info_container = QWidget()
+        info_layout = QVBoxLayout(info_container)
+        info_layout.setSpacing(8)
+        info_layout.setContentsMargins(5, 5, 5, 5)
+        
+        # Beacon 坐标信息显示区域
+        beacon_group = QGroupBox("🎯 Beacon 位置")
+        beacon_layout = QVBoxLayout(beacon_group)
+        
+        self.beacon_info_label = QLabel("等待数据...")
+        self.beacon_info_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        self.beacon_info_label.setWordWrap(True)
+        self.beacon_info_label.setStyleSheet("""
+            QLabel {
+                background-color: #1e1e1e;
+                color: #00ff00;
+                padding: 8px;
+                border-radius: 4px;
+                font-size: 11px;
+                font-family: 'Courier New', monospace;
+                border: 2px solid #00ff00;
+                font-weight: bold;
+            }
+        """)
+        beacon_layout.addWidget(self.beacon_info_label)
+        
+        info_layout.addWidget(beacon_group)
+        
+        # 地图状态信息组
+        status_group = QGroupBox("📊 地图状态")
+        status_layout = QVBoxLayout(status_group)
+        
+        self.info_label = QLabel("暂无地图数据")
+        self.info_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        self.info_label.setWordWrap(True)
+        self.info_label.setStyleSheet("""
+            QLabel {
+                background-color: #263238;
+                color: #4fc3f7;
+                padding: 5px;
+                border-radius: 3px;
+                font-size: 9px;
+                font-family: monospace;
+                border: 1px solid #455a64;
+            }
+        """)
+        status_layout.addWidget(self.info_label)
+        
+        # 更新状态标签
+        self.status_label = QLabel("等待接收地图数据...")
+        self.status_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        self.status_label.setWordWrap(True)
+        self.status_label.setStyleSheet("""
+            QLabel {
+                background-color: #263238;
+                color: #81c784;
+                padding: 5px;
+                border-radius: 3px;
+                font-size: 9px;
+                border: 1px solid #455a64;
+            }
+        """)
+        status_layout.addWidget(self.status_label)
+        
+        info_layout.addWidget(status_group)
         
         # 详细信息文本框
         details_group = QGroupBox("📝 详细信息")
@@ -875,21 +894,31 @@ class MapViewerWidget(QWidget):
         
         self.details_text = QTextEdit()
         self.details_text.setReadOnly(True)
-        self.details_text.setMaximumHeight(80)
+        self.details_text.setMinimumHeight(120)
         self.details_text.setStyleSheet("""
             QTextEdit {
                 background-color: #263238;
                 color: #e0e0e0;
                 border: 1px solid #455a64;
                 font-family: monospace;
-                font-size: 10px;
-                padding: 6px;
+                font-size: 9px;
+                padding: 5px;
             }
         """)
         self.details_text.setPlainText("等待地图数据...")
         details_layout.addWidget(self.details_text)
         
-        layout.addWidget(details_group)
+        info_layout.addWidget(details_group)
+        info_layout.addStretch()  # 添加弹性空间，将内容推到顶部
+        
+        splitter.addWidget(info_container)
+        
+        # 设置分割器的初始比例（地图：信息 = 3:1）
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([800, 300])  # 初始宽度分配
+        
+        layout.addWidget(splitter)
     
     def update_map(self, map_data: dict):
         """更新地图显示"""
