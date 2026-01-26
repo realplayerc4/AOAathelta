@@ -94,8 +94,25 @@ class AOASerialReader(threading.Thread):
             连接成功返回 True，否则 False
         """
         try:
-            if self.serial and self.serial.is_open:
+            logger.debug(f"connect() 被调用: port={self.port}")
+            
+            # 检查串口是否已经打开且有效
+            if self.serial is not None and self.serial.is_open:
+                logger.debug("串口已打开，直接返回True")
                 return True
+            
+            # 确保清理旧连接
+            if self.serial is not None:
+                try:
+                    self.serial.close()
+                    logger.debug("关闭了旧的串口连接")
+                except:
+                    pass
+                self.serial = None
+            
+            if not self.port:
+                logger.error("串口名称为空，无法连接")
+                return False
             
             parity_value = {
                 "N": PARITY_NONE,
@@ -113,6 +130,7 @@ class AOASerialReader(threading.Thread):
                 2: STOPBITS_TWO,
             }.get(self.stopbits, STOPBITS_ONE)
 
+            logger.debug(f"正在打开串口: {self.port}")
             self.serial = Serial(
                 port=self.port,
                 baudrate=self.baudrate,
@@ -143,13 +161,15 @@ class AOASerialReader(threading.Thread):
     
     def disconnect(self):
         """断开串口连接"""
-        if self.serial and self.serial.is_open:
+        if self.serial:
             try:
-                self.serial.close()
-                logger.info(f"已断开串口: {self.port}")
+                if self.serial.is_open:
+                    self.serial.close()
+                    logger.info(f"已断开串口: {self.port}")
             except Exception as e:
                 logger.error(f"关闭串口失败: {e}")
-            self.serial = None
+            finally:
+                self.serial = None
     
     def register_callback(self, callback: Callable[[bytes], None]):
         """注册数据回调（原始字节流）"""
@@ -166,6 +186,8 @@ class AOASerialReader(threading.Thread):
     def run(self):
         """线程主循环"""
         self.running = True
+        reconnect_attempts = 0
+        max_reconnect_attempts = 3
         
         if not self.connect():
             logger.error("初始化失败，无法连接串口")
@@ -176,41 +198,66 @@ class AOASerialReader(threading.Thread):
             while self.running:
                 try:
                     # 从串口读取数据
-                    if self.serial and self.serial.in_waiting > 0:
-                        data = self.serial.read(self.serial.in_waiting)
-                        
-                        with self.lock:
-                            self.bytes_received += len(data)
-                            self.chunks_received += 1
-                        
-                        # 将数据推送到队列和回调
-                        try:
-                            if not self.raw_data_queue.full():
-                                self.raw_data_queue.put_nowait(data)
-                        except queue.Full:
-                            logger.warning("原始数据队列已满，丢弃最新数据块")
-
-                        with self.lock:
-                            callbacks = self.callbacks.copy()
-                        for callback in callbacks:
+                    if self.serial and self.serial.is_open:
+                        # 检查是否有数据可读
+                        if self.serial.in_waiting > 0:
+                            data = self.serial.read(self.serial.in_waiting)
+                            
+                            # 检查是否读取到空数据（可能是设备断开）
+                            if not data:
+                                logger.warning("串口报告有数据但读取为空，可能设备断开")
+                                raise SerialException("device reports readiness to read but returned no data")
+                            
+                            # 重置重连计数器
+                            reconnect_attempts = 0
+                            
+                            with self.lock:
+                                self.bytes_received += len(data)
+                                self.chunks_received += 1
+                            
+                            # 将数据推送到队列和回调
                             try:
-                                callback(data)
-                            except Exception as e:
-                                logger.error(f"回调函数执行失败: {e}")
-                    
+                                if not self.raw_data_queue.full():
+                                    self.raw_data_queue.put_nowait(data)
+                            except queue.Full:
+                                logger.warning("原始数据队列已满，丢弃最新数据块")
+
+                            with self.lock:
+                                callbacks = self.callbacks.copy()
+                            for callback in callbacks:
+                                try:
+                                    callback(data)
+                                except Exception as e:
+                                    logger.error(f"回调函数执行失败: {e}")
+                        
+                        else:
+                            # 没有可读数据时短暂延迟，避免 CPU 占用过高
+                            time.sleep(0.01)
                     else:
-                        # 没有可读数据时短暂延迟，避免 CPU 占用过高
-                        time.sleep(0.01)
+                        # 串口未打开，尝试重连
+                        raise SerialException("串口未打开")
                 
                 except SerialException as e:
                     logger.error(f"读取串口出错: {e}")
                     with self.lock:
                         self.errors += 1
                     
-                    # 尝试重新连接
+                    # 尝试重新连接（带重试限制）
                     self.disconnect()
-                    time.sleep(1.0)
-                    if not self.connect():
+                    reconnect_attempts += 1
+                    
+                    if reconnect_attempts <= max_reconnect_attempts:
+                        wait_time = min(1.0 * reconnect_attempts, 5.0)  # 递增等待时间，最多5秒
+                        logger.info(f"尝试重连 ({reconnect_attempts}/{max_reconnect_attempts})，等待 {wait_time:.1f} 秒...")
+                        time.sleep(wait_time)
+                        
+                        if self.connect():
+                            logger.info("重连成功")
+                            reconnect_attempts = 0  # 重连成功后重置计数器
+                        else:
+                            logger.warning(f"重连失败 (尝试 {reconnect_attempts}/{max_reconnect_attempts})")
+                    else:
+                        logger.error(f"达到最大重连次数 ({max_reconnect_attempts})，停止线程")
                         self.running = False
                 
                 except Exception as e:

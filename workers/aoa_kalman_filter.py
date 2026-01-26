@@ -4,7 +4,15 @@ AOA 过滤线程（原 AOAWorker）
 
 本模块包含卡尔曼滤波器实现，提供多目标跟踪和运动预测功能。
 """
-from PyQt6.QtCore import QThread, pyqtSignal
+try:
+    from PyQt6.QtCore import QThread, pyqtSignal
+    PYQT6_AVAILABLE = True
+except ImportError:
+    PYQT6_AVAILABLE = False
+    # 提供占位类，避免在非GUI环境下导入错误
+    QThread = object
+    pyqtSignal = lambda *args, **kwargs: None
+
 import logging
 import time
 import numpy as np
@@ -46,7 +54,9 @@ class PolarKalmanFilter:
         process_noise: float = 0.1,
         measurement_noise: float = 0.5,
         min_confidence: float = 0.3,
-        max_human_speed: float = 5.0
+        max_human_speed: float = 5.0,
+        angle_jump_threshold_deg: float = 90.0,
+        stale_reset_sec: float = 0.8
     ):
         """
         初始化极坐标卡尔曼滤波器
@@ -56,11 +66,15 @@ class PolarKalmanFilter:
             measurement_noise: 测量噪声强度
             min_confidence: 最小置信度
             max_human_speed: 人体最大合理速度 (米/秒)，用于过滤异常瞬时速度
+            angle_jump_threshold_deg: 角度突变剔除阈值（度），超过则拒绝该观测
+            stale_reset_sec: 角度连续性超时时间（秒），超过后视作重新开始
         """
         self.process_noise = process_noise
         self.measurement_noise = measurement_noise
         self.min_confidence = min_confidence
         self.max_human_speed = max_human_speed  # 人体跑步约 5m/s，超过判为异常
+        self.angle_jump_threshold_deg = angle_jump_threshold_deg
+        self.stale_reset_sec = stale_reset_sec
         
         # 状态向量: [distance, angle, v_distance, v_angle]
         self.state = np.zeros(4)
@@ -80,6 +94,8 @@ class PolarKalmanFilter:
         self.last_update_time = None
         self.confidence = 0.0
         self.update_count = 0
+        self.last_measurement_angle: Optional[float] = None
+        self.last_measurement_time: Optional[float] = None
         
         logger.info('极坐标卡尔曼滤波器已初始化')
     
@@ -99,7 +115,35 @@ class PolarKalmanFilter:
         self.confidence = 0.5
         self.initialized = True
         self.last_update_time = timestamp
+        self.last_measurement_angle = angle_deg
+        self.last_measurement_time = timestamp
         logger.info(f'极坐标卡尔曼滤波器已初始化，初始: 距离={distance:.3f}m, 角度={angle_deg:.1f}°')
+
+    def _is_angle_jump(self, angle_deg: float, timestamp: Optional[float]) -> bool:
+        """检测是否为异常角度跳变（如 60° → -60° 突变）。"""
+        if self.last_measurement_angle is None or self.last_measurement_time is None:
+            return False
+        if timestamp is None:
+            return False
+
+        dt = timestamp - self.last_measurement_time
+        if dt >= self.stale_reset_sec:
+            # 数据间隔过长视为重新开始
+            return False
+
+        delta = angle_deg - self.last_measurement_angle
+        while delta > 180.0:
+            delta -= 360.0
+        while delta < -180.0:
+            delta += 360.0
+
+        if abs(delta) > self.angle_jump_threshold_deg:
+            logger.debug(
+                f'角度跳变 {delta:+.1f}° 超过阈值 {self.angle_jump_threshold_deg:.1f}°，拒绝本次观测'
+            )
+            return True
+
+        return False
     
     def predict(self, dt: float):
         """
@@ -246,6 +290,30 @@ class PolarKalmanFilter:
         if dt > 0:
             # 预测步骤
             self.predict(dt)
+
+        # 角度突变剔除：如果观测与最近一次角度相差过大且时间间隔短，则拒绝更新
+        if self._is_angle_jump(angle_deg, timestamp):
+            if timestamp is not None:
+                self.last_update_time = timestamp
+            # 轻微衰减置信度，但保持当前预测状态
+            self.confidence = max(self.min_confidence, self.confidence * 0.95)
+
+            filtered_distance = float(self.state[0])
+            filtered_angle = float(self.state[1])
+            angle_rad = math.radians(filtered_angle)
+            filtered_y = filtered_distance * math.cos(angle_rad)
+            filtered_x = -filtered_distance * math.sin(angle_rad)
+
+            return filtered_x, filtered_y, {
+                'status': 'rejected_angle_jump',
+                'confidence': float(self.confidence),
+                'filtered_x': filtered_x,
+                'filtered_y': filtered_y,
+                'filtered_distance': filtered_distance,
+                'filtered_angle': filtered_angle,
+                'v_distance': float(self.state[2]),
+                'v_angle': float(self.state[3])
+            }
         
         # 更新步骤
         self.update(distance, angle_deg)
@@ -253,6 +321,8 @@ class PolarKalmanFilter:
         # 更新时间戳
         if timestamp is not None:
             self.last_update_time = timestamp
+            self.last_measurement_time = timestamp
+        self.last_measurement_angle = angle_deg
         
         self.update_count += 1
         
@@ -327,6 +397,8 @@ class PolarKalmanFilter:
         self.last_update_time = None
         self.confidence = 0.0
         self.update_count = 0
+        self.last_measurement_angle = None
+        self.last_measurement_time = None
         logger.info('极坐标卡尔曼滤波器已重置')
 
 
@@ -616,7 +688,10 @@ class MultiTargetKalmanFilter:
         measurement_noise: float = 0.5,
         min_confidence: float = 0.3,
         target_lost_timeout: float = 2.0,
-        max_human_speed: float = 5.0
+        max_human_speed: float = 5.0,
+        angle_jump_threshold_deg: float = 90.0,
+        stale_reset_sec: float = 0.8,
+        prediction_horizon: float = 0.5
     ):
         """
         初始化多目标卡尔曼滤波器（极坐标版本）
@@ -627,12 +702,18 @@ class MultiTargetKalmanFilter:
             min_confidence: 最小置信度
             target_lost_timeout: 目标丢失超时时间 (秒)
             max_human_speed: 人体最大合理速度 (米/秒)
+            angle_jump_threshold_deg: 角度突变剔除阈值（度），超过则拒绝该观测
+            stale_reset_sec: 角度连续性超时时间（秒）
+            prediction_horizon: 兼容旧参数，占位不用
         """
         self.process_noise = process_noise
         self.measurement_noise = measurement_noise
         self.min_confidence = min_confidence
         self.target_lost_timeout = target_lost_timeout
         self.max_human_speed = max_human_speed
+        self.angle_jump_threshold_deg = angle_jump_threshold_deg
+        self.stale_reset_sec = stale_reset_sec
+        self.prediction_horizon = prediction_horizon
         
         # 每个标签 ID 对应一个极坐标滤波器实例
         self.filters: Dict[int, PolarKalmanFilter] = {}
@@ -664,7 +745,9 @@ class MultiTargetKalmanFilter:
                 process_noise=self.process_noise,
                 measurement_noise=self.measurement_noise,
                 min_confidence=self.min_confidence,
-                max_human_speed=self.max_human_speed
+                max_human_speed=self.max_human_speed,
+                angle_jump_threshold_deg=self.angle_jump_threshold_deg,
+                stale_reset_sec=self.stale_reset_sec
             )
         
         # 使用对应的滤波器进行滤波
@@ -783,9 +866,10 @@ class AOAFilter(QThread):
         self.kalman_filter = MultiTargetKalmanFilter(
             process_noise=0.1,
             measurement_noise=0.5,
-            prediction_horizon=0.5,
             min_confidence=0.3,
-            target_lost_timeout=2.0
+            target_lost_timeout=2.0,
+            angle_jump_threshold_deg=self.angle_jump_threshold_deg,
+            stale_reset_sec=self.stale_reset_sec
         )
 
         self.filter_enabled = True  # 是否启用卡尔曼滤波

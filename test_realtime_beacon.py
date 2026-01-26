@@ -10,8 +10,9 @@ import math
 import argparse
 import logging
 import re
-from typing import Optional, Tuple, Dict
+from typing import Optional, Tuple, Dict, List
 from collections import deque
+import serial.tools.list_ports
 
 # 添加项目根路径到sys.path
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
@@ -28,6 +29,84 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def find_available_serial_ports() -> List[str]:
+    """扫描所有可用的串口"""
+    ports = serial.tools.list_ports.comports()
+    available_ports = []
+    for port in ports:
+        available_ports.append(port.device)
+    return available_ports
+
+
+def auto_detect_beacon_port(baudrate: int = 921600, timeout: float = 3.0) -> Optional[str]:
+    """
+    自动检测带有beacon数据的串口
+    
+    Args:
+        baudrate: 波特率
+        timeout: 每个串口的检测超时时间
+    
+    Returns:
+        检测到的串口名称，如果没有找到返回 None
+    """
+    ports = find_available_serial_ports()
+    
+    if not ports:
+        logger.warning("未找到任何可用串口")
+        return None
+    
+    logger.info(f"扫描到 {len(ports)} 个可用串口: {', '.join(ports)}")
+    
+    for port in ports:
+        logger.info(f"正在检测串口: {port}")
+        try:
+            # 创建临时读取器测试串口
+            test_reader = AOASerialReader(
+                port=port,
+                baudrate=baudrate,
+                timeout=0.5
+            )
+            
+            if not test_reader.connect():
+                logger.debug(f"{port}: 连接失败")
+                continue
+            
+            # 等待并读取数据
+            start_time = time.time()
+            data_received = False
+            
+            while time.time() - start_time < timeout:
+                try:
+                    if test_reader.serial and test_reader.serial.in_waiting > 0:
+                        data = test_reader.serial.read(test_reader.serial.in_waiting)
+                        if data:
+                            # 检查数据是否包含beacon特征字符串
+                            text = data.decode('utf-8', errors='ignore')
+                            if 'DS-TWR' in text or 'PDoA' in text or 'Azimuth' in text:
+                                logger.info(f"✓ 在 {port} 检测到beacon数据")
+                                test_reader.disconnect()
+                                return port
+                            data_received = True
+                except Exception as e:
+                    logger.debug(f"{port}: 读取错误 - {e}")
+                
+                time.sleep(0.1)
+            
+            test_reader.disconnect()
+            
+            if data_received:
+                logger.debug(f"{port}: 有数据但不是beacon格式")
+            else:
+                logger.debug(f"{port}: {timeout}秒内无数据")
+                
+        except Exception as e:
+            logger.debug(f"{port}: 检测异常 - {e}")
+            continue
+    
+    logger.warning("未在任何串口检测到beacon数据")
+    return None
+
+
 class BeaconDataParser:
     """从串口ASCII文本解析beacon信息"""
     
@@ -38,6 +117,7 @@ class BeaconDataParser:
         self.text_buffer = ""            # ASCII文本缓冲
         self.beacon_status = "UNKNOWN"   # beacon状态：CONNECTED/DISCONNECTED/UNKNOWN
         self.last_seq = None
+        self.last_disconnect_time = None  # 上次断开检测时间
         
         # 正则表达式模式 - 匹配新的ASCII格式
         self._re_seq = re.compile(r"Custom\s+DS-TWR\s+Responder\s+SEQ\s+NUM\s+(\d+)")
@@ -65,12 +145,27 @@ class BeaconDataParser:
         # 解码文本，处理编码错误
         self.text_buffer += data.decode('utf-8', errors='ignore')
         
+        frames = []
+        
         # 检测beacon断开日志
         if self._re_uwb_fail.search(self.text_buffer):
-            self.beacon_status = "DISCONNECTED"
-            logger.debug(f"检测到 UWB RX fail - beacon 无信号")
-        
-        frames = []
+            current_time = time.time()
+            # 避免重复输出断开信息
+            if self.beacon_status != "DISCONNECTED" or \
+               (self.last_disconnect_time is None or current_time - self.last_disconnect_time > 1.0):
+                self.beacon_status = "DISCONNECTED"
+                self.last_disconnect_time = current_time
+               # logger.info(f"检测到 UWB RX fail - beacon 断开")
+                # 返回一个断开状态的帧
+                frames.append({
+                    'tag_id': 1,
+                    'distance': 0.0,
+                    'angle': 0.0,
+                    'rssi': 0,
+                    'snr': 0,
+                    'seq': None,
+                    'peer': 'DISCONNECTED'
+                })
         
         # 逐行处理
         if '\n' in self.text_buffer:
@@ -152,12 +247,12 @@ class BeaconDataParser:
 class RealtimeKalmanTest:
     """实时卡尔曼滤波测试"""
     
-    def __init__(self, port: str, baudrate: int = 921600, duration: int = 60):
+    def __init__(self, port: Optional[str] = None, baudrate: int = 921600, duration: int = 60):
         """
         初始化测试
         
         Args:
-            port: 串口名称
+            port: 串口名称（None表示自动检测）
             baudrate: 波特率
             duration: 测试持续时间（秒）
         """
@@ -165,10 +260,20 @@ class RealtimeKalmanTest:
         self.baudrate = baudrate
         self.duration = duration
         
-        # 初始化读取器
+        # 如果未指定串口，自动检测
+        if self.port is None:
+            logger.info("未指定串口，开始自动检测...")
+            detected_port = auto_detect_beacon_port(baudrate=self.baudrate)
+            if detected_port:
+                self.port = detected_port
+                logger.info(f"自动选择串口: {self.port}")
+            else:
+                raise RuntimeError("无法自动检测到beacon串口，请手动指定 --port 参数")
+        
+        # 初始化读取器（使用self.port而不是port参数）
         self.reader = AOASerialReader(
-            port=port,
-            baudrate=baudrate,
+            port=self.port,
+            baudrate=self.baudrate,
             timeout=0.1
         )
         
@@ -198,7 +303,10 @@ class RealtimeKalmanTest:
         print(f"实时卡尔曼滤波测试 - 从串口读取beacon数据")
         print("=" * 160)
         print(f"串口: {self.port} @ {self.baudrate} baud")
-        print(f"测试时长: {self.duration} 秒\n")
+        if self.duration > 0:
+            print(f"测试时长: {self.duration} 秒\n")
+        else:
+            print(f"测试时长: 无限（按Ctrl+C停止）\n")
         
         # 注册数据回调
         self.reader.register_callback(self._on_raw_data)
@@ -213,8 +321,12 @@ class RealtimeKalmanTest:
         start_time = time.time()
         
         try:
-            while time.time() - start_time < self.duration:
-                time.sleep(0.01)  # 10ms轮询间隔
+            if self.duration > 0:
+                while time.time() - start_time < self.duration:
+                    time.sleep(0.01)  # 10ms轮询间隔
+            else:
+                while True:
+                    time.sleep(0.01)  # 10ms轮询间隔
         
         except KeyboardInterrupt:
             print("\n用户中断")
@@ -395,36 +507,41 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
-  python test_realtime_beacon.py --port /dev/ttyUSB0 --baudrate 921600 --duration 60
-  python test_realtime_beacon.py --port COM3 --duration 30
+  python test_realtime_beacon.py                                    # 自动检测串口
+  python test_realtime_beacon.py --port /dev/ttyUSB0                # 手动指定串口
+  python test_realtime_beacon.py --port /dev/ttyUSB1 --duration 60  # 指定串口和时长
         """
     )
     
     parser.add_argument(
         '--port',
-        required=True,
-        help='串口名称 (e.g., /dev/ttyUSB0 或 COM3)'
+        default=None,
+        help='串口名称（留空自动检测，推荐）'
     )
     parser.add_argument(
         '--baudrate',
         type=int,
         default=921600,
-        help='波特率，默认 921600'
+        help='波特率（默认: 921600）'
     )
     parser.add_argument(
         '--duration',
         type=int,
-        default=60,
-        help='测试持续时间（秒），默认 60'
+        default=0,
+        help='测试持续时间（秒，0表示无限运行，默认: 0）'
     )
     
     args = parser.parse_args()
     
-    test = RealtimeKalmanTest(
-        port=args.port,
-        baudrate=args.baudrate,
-        duration=args.duration
-    )
+    try:
+        test = RealtimeKalmanTest(
+            port=args.port,
+            baudrate=args.baudrate,
+            duration=args.duration
+        )
+    except RuntimeError as e:
+        logger.error(f"初始化失败: {e}")
+        return 1
     
     try:
         test.run()
