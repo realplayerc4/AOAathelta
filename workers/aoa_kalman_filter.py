@@ -17,15 +17,36 @@ import logging
 import time
 import numpy as np
 import math
-from typing import Optional, Tuple, Dict
+from typing import Optional, Tuple, Dict, Any
 from threading import Lock
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from workers.aoa_serial_reader import AOASerialReader
-from models.aoa_data import AOAFrame, AOAPosition, AnchorData, TagData
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class AOAPosition:
+    """标签相对于 Anchor 的位置信息（简化版，移除 0x55 协议依赖）。"""
+    anchor_id: int
+    tag_id: int
+    distance: float  # 米
+    angle: float  # 度
+    timestamp: datetime = field(default_factory=datetime.now)
+    confidence: float = 1.0
+
+    def to_dict(self) -> dict:
+        return {
+            'anchor_id': self.anchor_id,
+            'tag_id': self.tag_id,
+            'distance': self.distance,
+            'angle': self.angle,
+            'timestamp': self.timestamp.isoformat(),
+            'confidence': self.confidence
+        }
 
 
 # =====================================================================
@@ -934,7 +955,7 @@ class AOAFilter(QThread):
         for frame in frames:
             self._handle_frame(frame)
 
-    def _handle_frame(self, frame: AOAFrame):
+    def _handle_frame(self, frame: Any):
         self.frame_count += 1
 
         # 不依赖校验和(is_valid)，只要能解析出tag_data和anchor_data就处理
