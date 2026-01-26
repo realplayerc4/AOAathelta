@@ -1,4 +1,0 @@
-/tracked_pose
-/battery_state
-/map
-/globe_beacon
