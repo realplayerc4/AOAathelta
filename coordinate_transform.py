@@ -49,7 +49,7 @@ class CoordinateTransformer:
             robot_pose: 地盘位姿态字典，包含：
                 - 'x': 地盘在地图中的X位置
                 - 'y': 地盘在地图中的Y位置
-                - 'yaw': 地盘的朝向角（弧度）
+                - 'yaw': 地盘的朝向角（弧度或度数）
         
         Returns:
             Tuple[float, float]: 地图全局坐标系中的 (x_global, y_global)
@@ -67,6 +67,10 @@ class CoordinateTransformer:
             # 验证输入
             beacon_local_x = float(beacon_local_x)
             beacon_local_y = float(beacon_local_y)
+            
+            # 如果 yaw 超过 2π，可能是度数，需要转换为弧度
+            if abs(yaw_robot) > 2 * math.pi:
+                yaw_robot = math.radians(yaw_robot)
             
             # 预计算旋转角的三角函数值
             cos_yaw = math.cos(yaw_robot)

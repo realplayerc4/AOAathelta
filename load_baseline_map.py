@@ -144,6 +144,23 @@ class BaselineMap:
             'area': self.metadata['width'] * self.metadata['height'] * self.metadata['resolution']**2
         }
     
+    def get_image_base64(self):
+        """获取地图图像的 Base64 编码字符串"""
+        import base64
+        import io
+        
+        if self.map_image is None:
+            raise RuntimeError("地图图像未加载")
+        
+        # 将图像转换为 PNG 字节
+        buffer = io.BytesIO()
+        self.map_image.save(buffer, format='PNG')
+        image_bytes = buffer.getvalue()
+        
+        # 转换为 Base64 字符串
+        image_base64 = base64.b64encode(image_bytes).decode('utf-8')
+        return image_base64
+    
     def print_info(self):
         """打印地图信息"""
         info = self.get_info()

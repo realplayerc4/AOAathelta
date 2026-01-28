@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AOA 定位系统 - 实时监测</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="container">
+        <!-- 顶部控制栏 -->
+        <div class="control-panel">
+            <div class="left-controls">
+                <h1>🗺️ AOA 定位系统</h1>
+            </div>
+            <div class="center-controls">
+                <button id="btnStart" class="btn btn-success">▶️ 启动</button>
+                <button id="btnStop" class="btn btn-danger">⏹️ 停止</button>
+                <span class="separator">|</span>
+                <button id="btnLoadMap" class="btn btn-primary">📍 加载地图</button>
+                <button id="btnClearMap" class="btn btn-secondary">🗑️ 清除地图</button>
+                <span class="separator">|</span>
+                <button id="btnDrawZone" class="btn btn-warning">✏️ 绘制区域</button>
+                <button id="btnClearZones" class="btn btn-danger">❌ 清除区域</button>
+            </div>
+            <div class="right-controls">
+                <div id="statusIndicator" class="status-indicator">
+                    <span class="status-dot offline"></span>
+                    <span id="statusText">离线</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- 主画布区域 -->
+        <div class="canvas-container">
+            <canvas id="mapCanvas" width="1024" height="600"></canvas>
+            <div class="canvas-info">
+                <div class="info-item">
+                    <span class="label">缩放:</span>
+                    <span id="zoomLevel">100%</span>
+                </div>
+                <div class="info-item">
+                    <span class="label">坐标:</span>
+                    <span id="coordinates">-</span>
+                </div>
+                <div class="info-item">
+                    <span class="label">Beacon:</span>
+                    <span id="beaconStatus">未检测</span>
+                </div>
+                <div class="info-item">
+                    <span class="label">警戒状态:</span>
+                    <span id="alertStatus" class="alert-safe">✓ 安全</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- 信息面板 -->
+        <div class="info-panel">
+            <div class="panel-group">
+                <div class="panel-item">
+                    <h3>🔦 Beacon 信息</h3>
+                    <div class="beacon-info">
+                        <p>位置 X: <span id="beaconX">-</span> m</p>
+                        <p>位置 Y: <span id="beaconY">-</span> m</p>
+                        <p>姿态: <span id="beaconYaw">-</span> rad</p>
+                        <p>置信度: <span id="beaconConf">-</span></p>
+                        <p>距离: <span id="beaconDist">-</span> m</p>
+                        <p>角度: <span id="beaconAngle">-</span> °</p>
+                    </div>
+                </div>
+                <div class="panel-item">
+                    <h3>🤖 机器人信息</h3>
+                    <div class="robot-info">
+                        <p>位置 X: <span id="robotX">-</span> m</p>
+                        <p>位置 Y: <span id="robotY">-</span> m</p>
+                        <p>朝向: <span id="robotYaw">-</span> rad</p>
+                        <p>连接状态: <span id="robotStatus" class="status-text">-</span></p>
+                    </div>
+                </div>
+                <div class="panel-item">
+                    <h3>📊 地图信息</h3>
+                    <div class="map-info">
+                        <p>原点 X: <span id="mapOriginX">-</span></p>
+                        <p>原点 Y: <span id="mapOriginY">-</span></p>
+                        <p>尺寸: <span id="mapSize">-</span></p>
+                        <p>分辨率: <span id="mapResolution">-</span></p>
+                    </div>
+                </div>
+                <div class="panel-item">
+                    <h3>🎯 检测区域</h3>
+                    <div class="zones-info">
+                        <p>区域数量: <span id="zoneCount">0</span></p>
+                        <p id="zonesList"></p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 隐藏的 canvas 用于地图处理 -->
+    <canvas id="tempCanvas" style="display: none;"></canvas>
+
+    <script src="/static/js/map.js"></script>
+</body>
+</html>

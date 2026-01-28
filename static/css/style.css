@@ -1,0 +1,357 @@
+/* ==================== 全局样式 ==================== */
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: #333;
+    height: 100vh;
+    overflow: hidden;
+}
+
+.container {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    background: #f0f2f5;
+}
+
+/* ==================== 控制栏 ==================== */
+
+.control-panel {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 20px;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+    flex-wrap: wrap;
+    gap: 15px;
+}
+
+.control-panel h1 {
+    font-size: 24px;
+    font-weight: 600;
+    margin: 0;
+    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+.left-controls {
+    flex: 0 0 auto;
+}
+
+.center-controls {
+    flex: 1;
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.right-controls {
+    flex: 0 0 auto;
+}
+
+.separator {
+    color: rgba(255, 255, 255, 0.5);
+    margin: 0 5px;
+}
+
+/* ==================== 按钮样式 ==================== */
+
+.btn {
+    padding: 8px 16px;
+    border: none;
+    border-radius: 4px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    white-space: nowrap;
+}
+
+.btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.btn:active {
+    transform: translateY(0);
+}
+
+.btn-primary {
+    background: #fff;
+    color: #667eea;
+}
+
+.btn-primary:hover {
+    background: #f8f9fa;
+}
+
+.btn-secondary {
+    background: rgba(255, 255, 255, 0.2);
+    color: white;
+    border: 1px solid rgba(255, 255, 255, 0.3);
+}
+
+.btn-secondary:hover {
+    background: rgba(255, 255, 255, 0.3);
+}
+
+.btn-warning {
+    background: #ffc107;
+    color: #333;
+}
+
+.btn-warning:hover {
+    background: #ffb300;
+}
+
+.btn-success {
+    background: #28a745;
+    color: white;
+}
+
+.btn-success:hover {
+    background: #218838;
+}
+
+.btn-danger {
+    background: #dc3545;
+    color: white;
+}
+
+.btn-danger:hover {
+    background: #c82333;
+}
+
+/* ==================== 状态指示器 ==================== */
+
+.status-indicator {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 20px;
+    border: 1px solid rgba(255, 255, 255, 0.3);
+}
+
+.status-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    animation: blink 1s infinite;
+}
+
+.status-dot.online {
+    background: #28a745;
+}
+
+.status-dot.offline {
+    background: #dc3545;
+    animation: none;
+}
+
+@keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+#statusText {
+    font-size: 14px;
+    font-weight: 500;
+}
+
+/* ==================== Canvas 容器 ==================== */
+
+.canvas-container {
+    flex: 1;
+    position: relative;
+    background: white;
+    margin: 10px;
+    border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    overflow: hidden;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+#mapCanvas {
+    max-width: 100%;
+    max-height: 100%;
+    cursor: crosshair;
+    display: block;
+}
+
+.canvas-info {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    background: rgba(0, 0, 0, 0.7);
+    color: #fff;
+    padding: 10px 15px;
+    border-radius: 6px;
+    font-size: 12px;
+    z-index: 100;
+    font-family: 'Monaco', 'Courier New', monospace;
+}
+
+.info-item {
+    margin: 5px 0;
+    display: flex;
+    gap: 8px;
+}
+
+.info-item .label {
+    font-weight: bold;
+    color: #aaa;
+    min-width: 60px;
+}
+
+.alert-safe {
+    color: #28a745;
+    font-weight: bold;
+}
+
+.alert-danger {
+    color: #dc3545;
+    font-weight: bold;
+    animation: pulse 0.5s infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.7; }
+}
+
+/* ==================== 信息面板 ==================== */
+
+.info-panel {
+    height: 150px;
+    background: white;
+    border-top: 1px solid #e0e0e0;
+    padding: 10px;
+    overflow-y: auto;
+    box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.05);
+}
+
+.panel-group {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 15px;
+}
+
+.panel-item {
+    background: #f8f9fa;
+    padding: 12px;
+    border-radius: 6px;
+    border-left: 4px solid #667eea;
+}
+
+.panel-item h3 {
+    font-size: 13px;
+    font-weight: 600;
+    color: #333;
+    margin-bottom: 8px;
+}
+
+.beacon-info,
+.robot-info,
+.map-info,
+.zones-info {
+    font-size: 12px;
+    color: #666;
+    font-family: 'Monaco', 'Courier New', monospace;
+}
+
+.beacon-info p,
+.robot-info p,
+.map-info p,
+.zones-info p {
+    margin: 4px 0;
+    word-break: break-all;
+}
+
+.status-text {
+    color: #28a745;
+    font-weight: bold;
+}
+
+/* ==================== 响应式设计 ==================== */
+
+@media (max-width: 1200px) {
+    .panel-group {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+
+@media (max-width: 768px) {
+    .control-panel {
+        flex-direction: column;
+        padding: 10px;
+    }
+
+    .left-controls {
+        width: 100%;
+        text-align: center;
+    }
+
+    .control-panel h1 {
+        font-size: 18px;
+    }
+
+    .center-controls {
+        width: 100%;
+        order: 3;
+    }
+
+    .right-controls {
+        width: 100%;
+        text-align: center;
+    }
+
+    .panel-group {
+        grid-template-columns: 1fr;
+    }
+
+    .canvas-container {
+        margin: 5px;
+    }
+
+    #mapCanvas {
+        width: 100%;
+        height: 100%;
+    }
+
+    .canvas-info {
+        font-size: 11px;
+    }
+}
+
+/* ==================== 滚动条美化 ==================== */
+
+.info-panel::-webkit-scrollbar {
+    width: 6px;
+}
+
+.info-panel::-webkit-scrollbar-track {
+    background: #f1f1f1;
+}
+
+.info-panel::-webkit-scrollbar-thumb {
+    background: #888;
+    border-radius: 3px;
+}
+
+.info-panel::-webkit-scrollbar-thumb:hover {
+    background: #555;
+}
