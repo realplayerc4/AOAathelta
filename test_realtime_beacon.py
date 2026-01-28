@@ -2,6 +2,7 @@
 """
 实时卡尔曼滤波测试 - 使用串口beacon数据
 从AOASerialReader获取实时数据，进行滤波处理和结果对比
+集成地盘位姿态API，将Beacon位置转换到地图全局坐标系
 """
 import sys
 import os
@@ -21,6 +22,8 @@ if PROJECT_ROOT not in sys.path:
 
 from workers.aoa_kalman_filter import MultiTargetKalmanFilter
 from workers.aoa_serial_reader import AOASerialReader
+from core.api_client import APIClient
+from coordinate_transform import transform_beacon_position, CoordinateTransformer
 
 logging.basicConfig(
     level=logging.INFO,
@@ -40,7 +43,7 @@ def find_available_serial_ports() -> List[str]:
 
 def auto_detect_beacon_port(baudrate: int = 921600, timeout: float = 3.0) -> Optional[str]:
     """
-    自动检测带有beacon数据的串口
+    自动检测带有anchor设备的串口（检测beacon数据或UWB RX fail消息）
     
     Args:
         baudrate: 波特率
@@ -80,10 +83,15 @@ def auto_detect_beacon_port(baudrate: int = 921600, timeout: float = 3.0) -> Opt
                     if test_reader.serial and test_reader.serial.in_waiting > 0:
                         data = test_reader.serial.read(test_reader.serial.in_waiting)
                         if data:
-                            # 检查数据是否包含beacon特征字符串
+                            # 检查数据是否包含beacon数据或anchor工作特征
                             text = data.decode('utf-8', errors='ignore')
+                            # 检测beacon数据或UWB RX fail（表示anchor在工作）
                             if 'DS-TWR' in text or 'PDoA' in text or 'Azimuth' in text:
                                 logger.info(f"✓ 在 {port} 检测到beacon数据")
+                                test_reader.disconnect()
+                                return port
+                            elif 'UWB RX fail' in text:
+                                logger.info(f"✓ 在 {port} 检测到anchor设备（beacon断连状态）")
                                 test_reader.disconnect()
                                 return port
                             data_received = True
@@ -95,7 +103,7 @@ def auto_detect_beacon_port(baudrate: int = 921600, timeout: float = 3.0) -> Opt
             test_reader.disconnect()
             
             if data_received:
-                logger.debug(f"{port}: 有数据但不是beacon格式")
+                logger.debug(f"{port}: 有数据但不是anchor/beacon格式")
             else:
                 logger.debug(f"{port}: {timeout}秒内无数据")
                 
@@ -103,7 +111,7 @@ def auto_detect_beacon_port(baudrate: int = 921600, timeout: float = 3.0) -> Opt
             logger.debug(f"{port}: 检测异常 - {e}")
             continue
     
-    logger.warning("未在任何串口检测到beacon数据")
+    logger.warning("未在任何串口检测到anchor设备")
     return None
 
 
@@ -245,7 +253,7 @@ class BeaconDataParser:
 
 
 class RealtimeKalmanTest:
-    """实时卡尔曼滤波测试"""
+    """实时卡尔曼滤波测试 - 集成地盘位姿态和坐标变换"""
     
     def __init__(self, port: Optional[str] = None, baudrate: int = 921600, duration: int = 60):
         """
@@ -268,7 +276,7 @@ class RealtimeKalmanTest:
                 self.port = detected_port
                 logger.info(f"自动选择串口: {self.port}")
             else:
-                raise RuntimeError("无法自动检测到beacon串口，请手动指定 --port 参数")
+                raise RuntimeError("无法自动检测到anchor设备，请手动指定 --port 参数或检查设备连接")
         
         # 初始化读取器（使用self.port而不是port参数）
         self.reader = AOASerialReader(
@@ -287,9 +295,24 @@ class RealtimeKalmanTest:
             min_confidence=0.3
         )
         
+        # 初始化API客户端（用于获取地盘位姿态）
+        try:
+            self.api_client = APIClient()
+            self.last_robot_pose = None
+            self.pose_fetch_error_count = 0
+            logger.info(f"已初始化API客户端，地址: {self.api_client.base_url}")
+        except Exception as e:
+            logger.warning(f"API客户端初始化失败，将在本地坐标系工作: {e}")
+            self.api_client = None
+            self.last_robot_pose = None
+        
+        # 坐标变换器
+        self.transformer = CoordinateTransformer()
+        
         # 数据收集
         self.raw_measurements = deque()  # (tag_id, distance, angle, timestamp)
         self.filtered_results = deque()  # (tag_id, x, y, confidence, timestamp)
+        self.global_positions = deque()  # (tag_id, x_global, y_global, yaw, confidence, timestamp)
         
         # 统计
         self.total_frames = 0
@@ -297,16 +320,61 @@ class RealtimeKalmanTest:
         self.parse_errors = 0
         self.display_count = 0  # 用于控制表头显示频率
     
+    def _fetch_robot_pose(self) -> Optional[Dict]:
+        """
+        获取地盘的当前位姿态（地图全局坐标）
+        
+        Returns:
+            Dict with keys 'x', 'y', 'yaw'，或None如果获取失败
+        """
+        if not self.api_client:
+            return None
+        
+        try:
+            pose_data = self.api_client.fetch_pose()
+            
+            # 验证数据
+            if not self.transformer.validate_robot_pose(pose_data):
+                self.pose_fetch_error_count += 1
+                if self.pose_fetch_error_count == 1:
+                    logger.warning(f"地盘位姿态数据无效: {pose_data}")
+                return None
+            
+            self.pose_fetch_error_count = 0
+            self.last_robot_pose = pose_data
+            return pose_data
+            
+        except Exception as e:
+            self.pose_fetch_error_count += 1
+            if self.pose_fetch_error_count == 1:  # 只在第一次出错时输出
+                logger.warning(f"获取地盘位姿态失败: {e}，将在本地坐标系工作")
+            return None
+    
     def run(self):
         """运行测试"""
-        print("\n" + "=" * 160)
-        print(f"实时卡尔曼滤波测试 - 从串口读取beacon数据")
-        print("=" * 160)
+        print("\n" + "=" * 180)
+        print(f"实时卡尔曼滤波测试 - 地盘全局坐标定位")
+        print("=" * 180)
         print(f"串口: {self.port} @ {self.baudrate} baud")
         if self.duration > 0:
             print(f"测试时长: {self.duration} 秒\n")
         else:
             print(f"测试时长: 无限（按Ctrl+C停止）\n")
+        
+        # 测试API连接
+        if self.api_client:
+            try:
+                pose = self._fetch_robot_pose()
+                if pose:
+                    print(f"✓ 地盘API连接成功 - 当前位姿: x={pose['x']:.3f}, y={pose['y']:.3f}, yaw={pose['yaw']:.3f}")
+                else:
+                    print(f"✗ 地盘位姿态获取失败 - 将在本地坐标系工作")
+            except Exception as e:
+                print(f"✗ 地盘API连接失败: {e} - 将在本地坐标系工作")
+        else:
+            print(f"✗ API客户端未初始化 - 将在本地坐标系工作")
+        
+        print()
         
         # 注册数据回调
         self.reader.register_callback(self._on_raw_data)
@@ -314,18 +382,30 @@ class RealtimeKalmanTest:
         # 启动读取线程
         self.reader.start()
         
-        print("数据格式: time(时间) dis(距离) angle(角度) rawx/rawy(原始坐标) filtx/filty(滤波坐标) conf(置信度) speed(速度) status(状态)")
-        print("-" * 140)
+        print("数据格式: time dis angle local_x local_y filtered_x filtered_y global_x global_y yaw conf speed status")
+        print("-" * 180)
         
         # 主循环
         start_time = time.time()
+        last_pose_fetch = start_time
+        pose_fetch_interval = 0.05  # 20Hz获取位姿态
         
         try:
             if self.duration > 0:
                 while time.time() - start_time < self.duration:
+                    # 定期获取地盘位姿态
+                    now = time.time()
+                    if now - last_pose_fetch >= pose_fetch_interval:
+                        self._fetch_robot_pose()
+                        last_pose_fetch = now
                     time.sleep(0.01)  # 10ms轮询间隔
             else:
                 while True:
+                    # 定期获取地盘位姿态
+                    now = time.time()
+                    if now - last_pose_fetch >= pose_fetch_interval:
+                        self._fetch_robot_pose()
+                        last_pose_fetch = now
                     time.sleep(0.01)  # 10ms轮询间隔
         
         except KeyboardInterrupt:
@@ -336,7 +416,7 @@ class RealtimeKalmanTest:
             self.reader.stop()
             self.reader.join(timeout=2.0)
             
-            print("-" * 160)
+            print("-" * 180)
             self._print_summary(elapsed)
     
     def _on_raw_data(self, data: bytes):
@@ -379,6 +459,31 @@ class RealtimeKalmanTest:
                 confidence = info.get('confidence', 0.0)
                 self.filtered_results.append((tag_id, filtered_x, filtered_y, confidence, ts))
                 
+                # 尝试转换到地图全局坐标系
+                robot_pose = self.last_robot_pose
+                if robot_pose:
+                    try:
+                        # 构建局部坐标信息
+                        local_pos = {
+                            'x': filtered_x,
+                            'y': filtered_y,
+                            'vx': info.get('v_distance', 0) * (-math.sin(math.radians(info.get('filtered_angle', 0)))),
+                            'vy': info.get('v_distance', 0) * (math.cos(math.radians(info.get('filtered_angle', 0))))
+                        }
+                        
+                        # 转换到全局坐标
+                        global_pos = transform_beacon_position(local_pos, robot_pose)
+                        self.global_positions.append((
+                            tag_id,
+                            global_pos['x'],
+                            global_pos['y'],
+                            global_pos.get('yaw', 0.0),
+                            confidence,
+                            ts
+                        ))
+                    except Exception as e:
+                        logger.debug(f"坐标转换失败: {e}")
+                
                 # 立即显示这一行数据
                 self._display_one_result(tag_id, filtered_x, filtered_y, confidence, ts)
             else:
@@ -387,7 +492,7 @@ class RealtimeKalmanTest:
                 self._display_one_result(tag_id, 0.0, 0.0, 0.0, ts)
     
     def _display_one_result(self, tag_id: int, filt_x: float, filt_y: float, confidence: float, ts: float):
-        """实时显示单条结果 - 带字段标签"""
+        """实时显示单条结果 - 包括全局坐标和朝向"""
         self.display_count += 1
         
         # 对应的原始测量
@@ -411,17 +516,32 @@ class RealtimeKalmanTest:
         # beacon状态指示符
         status_symbol = "✓" if self.parser.beacon_status == "CONNECTED" else "✗"
         
+        # 获取全局坐标
+        global_x, global_y, global_yaw = 0.0, 0.0, 0.0
+        pose_status = "no_pose"
+        if self.last_robot_pose:
+            # 查找最新的全局位置
+            for g_tag, g_x, g_y, g_yaw, g_conf, g_ts in reversed(self.global_positions):
+                if g_tag == tag_id and abs(g_ts - ts) < 0.1:
+                    global_x, global_y, global_yaw = g_x, g_y, g_yaw
+                    pose_status = "ok"
+                    break
+            if pose_status == "no_pose":
+                pose_status = f"pose_delay"
+        
         # 颜色定义
-        GREEN = "\033[92m"  # 绿色 - 数据值
-        WHITE = "\033[97m"  # 白色 - 字段名
+        GREEN = "\033[92m"   # 绿色 - 数据值
+        CYAN = "\033[96m"    # 青色 - 全局坐标
+        WHITE = "\033[97m"   # 白色 - 字段名
         RESET = "\033[0m"
         
-        # 带颜色的输出格式 - 字段名白色，数值绿色
-        print(f"{WHITE}time={GREEN}{elapsed:6.2f}s {WHITE}dis={GREEN}{distance:5.2f}m {WHITE}angle={GREEN}{angle:4.0f}° "
-              f"{WHITE}rawx={GREEN}{raw_x:6.2f}m {WHITE}rawy={GREEN}{raw_y:6.2f}m "
-              f"{WHITE}filtx={GREEN}{filt_x:6.2f}m {WHITE}filty={GREEN}{filt_y:6.2f}m "
+        # 显示格式：时间 距离 角度 | 局部坐标 | 滤波坐标 | 全局坐标 朝向 置信度 速度 状态
+        print(f"{WHITE}t={GREEN}{elapsed:6.2f}s {WHITE}d={GREEN}{distance:5.2f}m {WHITE}a={GREEN}{angle:4.0f}° "
+              f"{WHITE}| local={GREEN}{filt_x:6.2f}/{filt_y:6.2f}m "
+              f"{WHITE}| global={CYAN}{global_x:6.2f}/{global_y:6.2f}m {WHITE}yaw={CYAN}{global_yaw:6.2f}rad "
               f"{WHITE}conf={GREEN}{confidence:4.2f} {WHITE}speed={GREEN}{speed:5.2f}m/s "
-              f"{WHITE}status={GREEN}{status_symbol}({self.parser.beacon_status}){RESET}")
+              f"{WHITE}status={GREEN}{status_symbol}({self.parser.beacon_status}){WHITE}|pose={CYAN}{pose_status}{RESET}")
+
     
     def _display_latest_results(self):
         """显示最新的滤波结果"""
@@ -460,7 +580,7 @@ class RealtimeKalmanTest:
     def _print_summary(self, elapsed: float):
         """打印总结统计"""
         print(f"\n✅ 测试完成")
-        print("=" * 160)
+        print("=" * 180)
         print(f"测试耗时: {elapsed:.2f} 秒")
         print(f"总接收帧数: {self.total_frames}")
         print(f"有效帧数（可解析）: {self.valid_frames}")
@@ -491,6 +611,49 @@ class RealtimeKalmanTest:
         print(f"  错误: {reader_stats.get('errors', 0)}")
         
         print()
+        
+        # 全局坐标统计
+        if self.global_positions:
+            print(f"全局坐标统计:")
+            global_tag_stats = {}
+            for tag_id, x, y, yaw, conf, ts in self.global_positions:
+                if tag_id not in global_tag_stats:
+                    global_tag_stats[tag_id] = {
+                        'count': 0,
+                        'x_list': [],
+                        'y_list': [],
+                        'yaw_list': [],
+                        'conf_sum': 0
+                    }
+                global_tag_stats[tag_id]['count'] += 1
+                global_tag_stats[tag_id]['x_list'].append(x)
+                global_tag_stats[tag_id]['y_list'].append(y)
+                global_tag_stats[tag_id]['yaw_list'].append(yaw)
+                global_tag_stats[tag_id]['conf_sum'] += conf
+            
+            for tag_id in sorted(global_tag_stats.keys()):
+                stats = global_tag_stats[tag_id]
+                if stats['count'] > 0:
+                    avg_x = sum(stats['x_list']) / stats['count']
+                    avg_y = sum(stats['y_list']) / stats['count']
+                    avg_yaw = sum(stats['yaw_list']) / stats['count']
+                    avg_conf = stats['conf_sum'] / stats['count']
+                    
+                    # 计算位置标准差
+                    var_x = sum((x - avg_x) ** 2 for x in stats['x_list']) / max(1, stats['count'] - 1)
+                    var_y = sum((y - avg_y) ** 2 for y in stats['y_list']) / max(1, stats['count'] - 1)
+                    std_x = math.sqrt(var_x)
+                    std_y = math.sqrt(var_y)
+                    
+                    print(f"  Tag {tag_id} (全局坐标):")
+                    print(f"    样本数: {stats['count']}")
+                    print(f"    平均位置: x={avg_x:.3f}m (±{std_x:.3f}), y={avg_y:.3f}m (±{std_y:.3f})")
+                    print(f"    平均朝向: {avg_yaw:.3f}rad ({math.degrees(avg_yaw):.1f}°)")
+                    print(f"    平均置信度: {avg_conf:.3f}")
+        else:
+            print(f"全局坐标统计: 无数据（可能API未连接）")
+        
+        print()
         print(f"Beacon 状态: {self.parser.beacon_status}")
         print(f"解析器统计:")
         parser_stats = self.parser.get_statistics()
@@ -498,7 +661,14 @@ class RealtimeKalmanTest:
         print(f"  成功解析: {parser_stats.get('valid_count', 0)}")
         print(f"  解析异常: {parser_stats.get('error_count', 0)}")
         
-        print("=" * 160)
+        if self.api_client:
+            print()
+            print(f"API客户端统计:")
+            if self.last_robot_pose:
+                print(f"  最后获取的地盘位姿: x={self.last_robot_pose['x']:.3f}, y={self.last_robot_pose['y']:.3f}, yaw={self.last_robot_pose['yaw']:.3f}")
+            print(f"  获取失败次数: {self.pose_fetch_error_count}")
+        
+        print("=" * 180)
 
 
 def main():
@@ -516,7 +686,7 @@ def main():
     parser.add_argument(
         '--port',
         default=None,
-        help='串口名称（留空自动检测，推荐）'
+        help='串口名称（留空自动检测anchor设备，推荐）'
     )
     parser.add_argument(
         '--baudrate',

@@ -851,6 +851,7 @@ class AOAFilter(QThread):
     statistics_updated = pyqtSignal(dict)  # 统计信息更新
     error = pyqtSignal(str)  # 错误信息
     status_changed = pyqtSignal(str)  # 状态变化
+    topic_emitted = pyqtSignal(dict)  # 标准化 Topic 消息
 
     def __init__(self, port: str = '/dev/ttyCH343USB0', baudrate: int = 921600,
                  angle_jump_threshold_deg: float = 60.0,
@@ -894,6 +895,49 @@ class AOAFilter(QThread):
         )
 
         self.filter_enabled = True  # 是否启用卡尔曼滤波
+
+    @staticmethod
+    def build_filtered_topic(
+        *,
+        anchor_id: int,
+        tag_id: int,
+        x: float,
+        y: float,
+        filtered_distance: float,
+        filtered_angle: float,
+        vx: float,
+        vy: float,
+        v_distance: float,
+        v_angle: float,
+        confidence: float,
+        status: str,
+        timestamp: float
+    ) -> Dict:
+        """构造统一的下游消费 Topic 消息。"""
+        return {
+            'topic': 'aoa.filtered',
+            'ts': float(timestamp),
+            'tagId': int(tag_id),
+            'anchorId': int(anchor_id),
+            'pose': {
+                'x': float(x),
+                'y': float(y)
+            },
+            'polar': {
+                'distance': float(filtered_distance),
+                'angle': float(filtered_angle)
+            },
+            'velocity': {
+                'x': float(vx),
+                'y': float(vy),
+                'distance': float(v_distance),
+                'angle': float(v_angle)
+            },
+            'quality': {
+                'confidence': float(confidence),
+                'status': str(status)
+            }
+        }
 
     def run(self):
         """线程主循环"""
@@ -1004,6 +1048,24 @@ class AOAFilter(QThread):
                 frame_info['acceleration_x'] = filter_info.get('acceleration_x', 0.0)
                 frame_info['acceleration_y'] = filter_info.get('acceleration_y', 0.0)
                 frame_info['filter_status'] = filter_info.get('status', 'unknown')
+
+                # 生成并发布标准化 Topic 消息
+                topic_payload = self.build_filtered_topic(
+                    anchor_id=frame.anchor_data.anchor_id,
+                    tag_id=tag_id,
+                    x=filtered_x,
+                    y=filtered_y,
+                    filtered_distance=filter_info.get('filtered_distance', 0.0),
+                    filtered_angle=filter_info.get('filtered_angle', 0.0),
+                    vx=filter_info.get('velocity_x', 0.0),
+                    vy=filter_info.get('velocity_y', 0.0),
+                    v_distance=filter_info.get('v_distance', 0.0),
+                    v_angle=filter_info.get('v_angle', 0.0),
+                    confidence=filter_info.get('confidence', 0.0),
+                    status=filter_info.get('status', 'unknown'),
+                    timestamp=ts
+                )
+                self.topic_emitted.emit(topic_payload)
             else:
                 # 未启用滤波时直接进行极坐标到笛卡尔坐标转换
                 # 坐标系：Y轴=前方, X轴=右侧（与 utils/aoa_kalman_filter.py 一致）
@@ -1031,6 +1093,24 @@ class AOAFilter(QThread):
                 frame_info['filtered_x'] = filtered_x
                 frame_info['filtered_y'] = filtered_y
                 frame_info['filter_status'] = 'no_filter'
+
+                # 未启用滤波时也发布 Topic（标注为 no_filter）
+                topic_payload = self.build_filtered_topic(
+                    anchor_id=frame.anchor_data.anchor_id,
+                    tag_id=tag_id,
+                    x=filtered_x,
+                    y=filtered_y,
+                    filtered_distance=distance,
+                    filtered_angle=angle,
+                    vx=0.0,
+                    vy=0.0,
+                    v_distance=0.0,
+                    v_angle=0.0,
+                    confidence=kalman_result['confidence'],
+                    status='no_filter',
+                    timestamp=ts
+                )
+                self.topic_emitted.emit(topic_payload)
 
             self.frame_received.emit(frame_info)
             # 仅显示卡尔曼滤波（或简化推算）结果
