@@ -283,7 +283,7 @@ if __name__ == '__main__':
             app.run(
                 host='127.0.0.1',
                 port=5001,  # 使用 5001 端口避免与 web_app.py 冲突
-                debug=False,
+                debug=False,  # 保持为False，防止debug信息输出
                 use_reloader=False
             )
         except KeyboardInterrupt:

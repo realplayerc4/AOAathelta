@@ -18,9 +18,9 @@ import numpy as np
 from core.api_client import APIClient
 
 # 日志配置
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s [%(levelname)s] %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 
 app = Flask(__name__)
 CORS(app)
@@ -644,7 +644,7 @@ if __name__ == '__main__':
     
     # 启动 Flask 服务器（树莓派上设置 host='0.0.0.0' 供其他设备访问）
     app.run(
-        host='127.0.0.1',  # 改为 '0.0.0.0' 可从其他设备访问
+        host='0.0.0.0',  # 改为 '0.0.0.0' 可从其他设备访问
         port=5000,
         debug=False,
         use_reloader=False
