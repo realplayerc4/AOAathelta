@@ -286,6 +286,33 @@ body {
     font-weight: bold;
 }
 
+/* ==================== 执行度/置信度色块 ==================== */
+
+.degree-badge {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    margin-left: 6px;
+    border-radius: 2px;
+    vertical-align: middle;
+}
+
+.degree-unknown {
+    background: #888;
+}
+
+.degree-green {
+    background: #28a745;
+}
+
+.degree-yellow {
+    background: #ffc107;
+}
+
+.degree-red {
+    background: #dc3545;
+}
+
 /* ==================== 响应式设计 ==================== */
 
 @media (max-width: 1200px) {

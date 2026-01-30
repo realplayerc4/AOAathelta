@@ -31,6 +31,9 @@ class MapViewer {
         // Beacon 全局坐标
         this.beaconGlobeX = null;
         this.beaconGlobeY = null;
+
+        // 执行度/置信度（百分比，用于颜色联动）
+        this.beaconConfidencePercent = null;
         
         // 机器人位置和朝向
         this.robotX = null;
@@ -505,6 +508,17 @@ class MapViewer {
         this.beaconGlobeX = x;
         this.beaconGlobeY = y;
     }
+
+    updateBeaconConfidencePercent(confidencePercent) {
+        this.beaconConfidencePercent = confidencePercent;
+    }
+
+    getDegreeColor(confidencePercent) {
+        if (!Number.isFinite(confidencePercent)) return '#888';
+        if (confidencePercent >= 70) return '#28a745';
+        if (confidencePercent >= 50) return '#ffc107';
+        return '#dc3545';
+    }
     
     drawBeaconGlobe() {
         if (this.beaconGlobeX === null || this.beaconGlobeY === null || !this.mapInfo) {
@@ -512,22 +526,24 @@ class MapViewer {
         }
         
         const pos = this.worldToCanvas(this.beaconGlobeX, this.beaconGlobeY);
+
+        const degreeColor = this.getDegreeColor(this.beaconConfidencePercent);
         
-        // 红色填充圆点
-        this.ctx.fillStyle = '#ff0000';
+        // 圆点颜色与执行度/置信度一致
+        this.ctx.fillStyle = degreeColor;
         this.ctx.beginPath();
         this.ctx.arc(pos.x, pos.y, 8, 0, Math.PI * 2);
         this.ctx.fill();
         
-        // 深红色边框
-        this.ctx.strokeStyle = '#cc0000';
+        // 边框同色
+        this.ctx.strokeStyle = degreeColor;
         this.ctx.lineWidth = 2;
         this.ctx.beginPath();
         this.ctx.arc(pos.x, pos.y, 8, 0, Math.PI * 2);
         this.ctx.stroke();
         
         // 标签
-        this.ctx.fillStyle = '#cc0000';
+        this.ctx.fillStyle = degreeColor;
         this.ctx.font = 'bold 11px Arial';
         this.ctx.fillText('Beacon(Globe)', pos.x + 12, pos.y - 12);
     }
@@ -761,7 +777,30 @@ async function updatePositionData() {
             // index.html 当前没有 beaconYaw 字段，避免空指针
             const beaconYawEl = document.getElementById('beaconYaw');
             if (beaconYawEl) beaconYawEl.textContent = '─';  // Beacon无方向
-            document.getElementById('beaconConf').textContent = (Number(confidence) * 100).toFixed(1) + '%';
+
+            const confidencePercent = Number(confidence) * 100;
+            document.getElementById('beaconConf').textContent = confidencePercent.toFixed(1) + '%';
+
+            // 数字后面的色块：70~99 绿，50~70 黄，<50 红
+            const beaconConfBadgeEl = document.getElementById('beaconConfBadge');
+            if (beaconConfBadgeEl) {
+                beaconConfBadgeEl.classList.remove('degree-green', 'degree-yellow', 'degree-red', 'degree-unknown');
+
+                if (!Number.isFinite(confidencePercent)) {
+                    beaconConfBadgeEl.classList.add('degree-unknown');
+                } else if (confidencePercent >= 70) {
+                    beaconConfBadgeEl.classList.add('degree-green');
+                } else if (confidencePercent >= 50) {
+                    beaconConfBadgeEl.classList.add('degree-yellow');
+                } else {
+                    beaconConfBadgeEl.classList.add('degree-red');
+                }
+
+                beaconConfBadgeEl.title = `执行度: ${confidencePercent.toFixed(1)}%`;
+            }
+
+            // 同步到地图绘制（globe beacon 小点颜色联动）
+            mapViewer.updateBeaconConfidencePercent(confidencePercent);
             document.getElementById('beaconDist').textContent = Number(distance).toFixed(2);
             document.getElementById('beaconAngle').textContent = Number(angle).toFixed(1);
             
