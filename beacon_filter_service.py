@@ -195,7 +195,7 @@ def beacon_processing_thread():
     logger.info("Beacon 处理线程已停止")
 
 
-def init_services(port: str = '/dev/ttyUSB1', baudrate: int = 921600):
+def init_services(port: str = '/dev/ttyUSB0', baudrate: int = 921600):
     """初始化串口和卡尔曼滤波器"""
     try:
         # 初始化卡尔曼滤波器
@@ -209,11 +209,27 @@ def init_services(port: str = '/dev/ttyUSB1', baudrate: int = 921600):
         logger.info("✅ 卡尔曼滤波器初始化完成")
         
         # 初始化串口读取器
+        logger.info(f"正在连接串口: {port} @ {baudrate} baud...")
         state.reader = AOASerialReader(port=port, baudrate=baudrate)
-        if state.reader.connect():
-            state.reader.start()
-            logger.info(f"✅ 串口 {port} 连接成功，开始接收 Beacon 数据")
-        else:
+        
+        # 添加连接重试机制
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                if state.reader.connect():
+                    state.reader.start()
+                    logger.info(f"✅ 串口 {port} 连接成功，开始接收 Beacon 数据")
+                    break
+                else:
+                    logger.warning(f"⚠️ 第 {attempt + 1}/{max_retries} 次连接失败")
+                    if attempt < max_retries - 1:
+                        time.sleep(1)
+            except Exception as e:
+                logger.warning(f"⚠️ 连接异常 (尝试 {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(1)
+        
+        if not state.reader.running:
             logger.warning(f"⚠️ 串口连接失败: {port}")
             logger.warning(f"   • 检查硬件是否连接")
             logger.warning(f"   • 运行: ls -la /dev/tty* 查看可用设备")
@@ -230,6 +246,8 @@ def init_services(port: str = '/dev/ttyUSB1', baudrate: int = 921600):
     
     except Exception as e:
         logger.error(f"❌ 初始化失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return False
 
 
@@ -299,33 +317,60 @@ if __name__ == '__main__':
     
     # 自动检测可用的串口设备
     import os
-    port = '/dev/ttyUSB0'  # 默认使用 USB0
+    port = None
     
-    # 检查可用的串口
+    # 检查可用的串口 - 优先级: ttyUSB0 -> ttyUSB1 -> ttyACM0 -> 其他
+    port_candidates = ['/dev/ttyUSB0', '/dev/ttyUSB1', '/dev/ttyACM0', '/dev/ttyAMA0', '/dev/ttyS0']
     available_ports = []
+    
+    # 先添加候选项中存在的端口
+    for candidate_port in port_candidates:
+        if os.path.exists(candidate_port):
+            available_ports.append(candidate_port)
+    
+    # 再添加其他可能的USB设备
     for i in range(10):
         test_port = f'/dev/ttyUSB{i}'
-        if os.path.exists(test_port):
+        if os.path.exists(test_port) and test_port not in available_ports:
             available_ports.append(test_port)
     
+    # 选择要使用的端口
     if available_ports:
         port = available_ports[0]
-        logger.info(f"🔍 检测到可用串口: {available_ports}")
-        logger.info(f"📍 使用串口: {port}")
+        logger.info(f"🔍 检测到可用串口设备:")
+        for p in available_ports:
+            marker = "→ 使用" if p == port else "  "
+            logger.info(f"   {marker} {p}")
     else:
-        logger.warning("⚠️ 未检测到USB串口设备，仍尝试连接 /dev/ttyUSB0")
+        logger.warning("⚠️ 未检测到任何串口设备")
+        logger.warning("   可用的设备列表：")
+        os.system("ls -la /dev/tty* 2>/dev/null || echo '   无法列出设备'")
+        port = '/dev/ttyUSB0'  # 仍然尝试默认端口
+        logger.warning(f"   将尝试连接默认端口: {port}")
     
     # 初始化服务
     if init_services(port=port, baudrate=921600):
         logger.info("✅ 所有服务初始化完成")
+        logger.info("")
+        logger.info("📊 服务信息:")
+        logger.info(f"  • Web API 地址: http://127.0.0.1:5001")
+        logger.info(f"  • 串口设备: {port}")
+        logger.info(f"  • 波特率: 921600 bps")
+        logger.info("")
         
         # 启动 Flask 服务器
         try:
             app.run(
-                host='127.0.0.1',
+                host='0.0.0.0',  # 改为0.0.0.0使得可以从其他设备访问
                 port=5001,  # 使用 5001 端口避免与 web_app.py 冲突
+<<<<<<< Updated upstream
                 debug=False,  # 保持为False，防止debug信息输出
                 use_reloader=False
+=======
+                debug=False,
+                use_reloader=False,
+                threaded=True
+>>>>>>> Stashed changes
             )
         except KeyboardInterrupt:
             logger.info("\n收到停止信号...")
