@@ -24,6 +24,130 @@ PROJECT_ROOT = Path(__file__).parent.absolute()
 # 进程列表
 processes = []
 
+def _get_listening_pids(port: int):
+    """获取监听指定端口的 PID（尽量兼容不同系统工具）。"""
+    candidates = []
+
+    # 优先 lsof
+    try:
+        res = subprocess.run(
+            ["lsof", "-nP", "-t", f"-iTCP:{port}", "-sTCP:LISTEN"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            for line in res.stdout.splitlines():
+                line = line.strip()
+                if line.isdigit():
+                    candidates.append(int(line))
+            return sorted(set(candidates))
+    except FileNotFoundError:
+        pass
+
+    # 再尝试 ss
+    try:
+        res = subprocess.run(
+            ["ss", "-lptn", f"sport = :{port}"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+        )
+        if res.returncode == 0 and res.stdout:
+            import re
+            for m in re.finditer(r"pid=(\d+)", res.stdout):
+                candidates.append(int(m.group(1)))
+            return sorted(set(candidates))
+    except FileNotFoundError:
+        pass
+
+    # 兜底 netstat
+    try:
+        res = subprocess.run(
+            ["netstat", "-lntp"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+        )
+        if res.returncode == 0 and res.stdout:
+            for line in res.stdout.splitlines():
+                if f":{port} " in line or line.rstrip().endswith(f":{port}"):
+                    # 最后一列类似 "1234/python3"
+                    parts = line.split()
+                    if parts:
+                        last = parts[-1]
+                        pid = last.split("/", 1)[0]
+                        if pid.isdigit():
+                            candidates.append(int(pid))
+            return sorted(set(candidates))
+    except FileNotFoundError:
+        pass
+
+    return []
+
+
+def _stop_processes(pids, name: str, timeout_sec: float = 5.0):
+    if not pids:
+        return
+
+    logger.warning(f"⚠️  发现旧服务占用端口（{name}），尝试停止: {pids}")
+
+    # 先 SIGTERM
+    for pid in pids:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            continue
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            continue
+
+    # 等待
+    end = time.time() + timeout_sec
+    while time.time() < end:
+        alive = False
+        for pid in pids:
+            try:
+                os.kill(pid, 0)
+                alive = True
+                break
+            except OSError:
+                continue
+        if not alive:
+            logger.info(f"✅ 旧服务已停止（{name}）")
+            return
+        time.sleep(0.2)
+
+    # 强杀
+    for pid in pids:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            continue
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            continue
+    logger.info(f"✅ 旧服务已强制停止（{name}）")
+
+
+def ensure_port_free(port: int, name: str):
+    """若端口被占用则先停止占用进程，然后再次确认端口可用。"""
+    if check_port_available(port):
+        return
+
+    pids = _get_listening_pids(port)
+    _stop_processes(pids, f"{name} :{port}")
+
+    # 再次确认
+    if not check_port_available(port):
+        logger.error(f"❌ 端口 {port} 仍被占用，无法启动新服务")
+        sys.exit(1)
+
 def signal_handler(sig, frame):
     """处理 Ctrl+C 信号"""
     logger.info("\n收到停止信号，正在关闭服务...")
@@ -75,14 +199,9 @@ def main():
     logger.info("AOA 定位系统 - 一键启动脚本")
     logger.info("=" * 60)
     
-    # 检查端口是否被占用
-    if not check_port_available(5001):
-        logger.error("❌ 端口 5001 已被占用，请先停止其他服务")
-        sys.exit(1)
-    
-    if not check_port_available(5000):
-        logger.error("❌ 端口 5000 已被占用，请先停止其他服务")
-        sys.exit(1)
+    # 启动前先关闭旧服务（若占用端口）
+    ensure_port_free(5001, "Beacon Filter Service")
+    ensure_port_free(5000, "Web App")
     
     logger.info("✓ 端口检查完成")
     

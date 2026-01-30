@@ -22,6 +22,10 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+# 关闭 werkzeug 的 HTTP 访问日志（例如："GET /api/..." 200 -），避免刷屏
+# 保留 ERROR 级别以上，便于看到真正的异常
+logging.getLogger('werkzeug').setLevel(logging.ERROR)
+
 app = Flask(__name__)
 CORS(app)
 
@@ -188,9 +192,10 @@ def update_position_worker():
                 robot_pose = api_client.fetch_pose()
                 
                 if robot_pose:
+                    pose_ts = time.time()
                     with position_lock:
                         position_cache['robot_pose'] = robot_pose
-                        position_cache['timestamp'] = time.time()
+                        position_cache['timestamp'] = pose_ts
                     
                     # 使用 INFO 级别日志，便于查看（每10次更新打印一次，避免刷屏）
                     if int(time.time() * 10) % 10 == 0:
@@ -198,9 +203,19 @@ def update_position_worker():
             except Exception as e:
                 logger.warning(f"获取地盘位姿态失败: {e}")
             
-            # 从5001端口获取Beacon滤波数据
+            # 从5001端口获取Beacon滤波数据（与 pose_ts 对齐）
             try:
-                response = requests.get('http://127.0.0.1:5001/api/beacon', timeout=1.0)
+                # 优先用本次 pose 的时间戳对齐；若本次没拿到 pose，则退化为当前时间
+                try:
+                    pose_ts
+                except NameError:
+                    pose_ts = time.time()
+
+                response = requests.get(
+                    'http://127.0.0.1:5001/api/beacon',
+                    params={'timestamp': pose_ts},
+                    timeout=1.0
+                )
                 if response.status_code == 200:
                     beacon_data = response.json()
                     
@@ -214,7 +229,8 @@ def update_position_worker():
                             'velocity_y': float(beacon_data.get('velocity_y', 0.0)),
                             'initialized': beacon_data.get('initialized', False),
                             'distance': float(beacon_data.get('distance', 0.0)),
-                            'angle': float(beacon_data.get('angle', 0.0))
+                            'angle': float(beacon_data.get('angle', 0.0)),
+                            'timestamp': float(beacon_data.get('timestamp', 0.0))
                         }
                     
                     if int(time.time() * 10) % 10 == 0:
@@ -587,6 +603,8 @@ def get_status():
     
     return jsonify({
         'is_running': app_state['is_running'],
+        # 兼容前端旧字段：reader_connected
+        'reader_connected': reader_status == 'connected',
         'beacon_service': reader_status,
         'timestamp': time.time()
     })

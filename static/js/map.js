@@ -336,12 +336,14 @@ class MapViewer {
     }
     
     drawGrid() {
-        const step = Math.ceil(10 / this.zoom);  // 每 10m 一格
+        // 每 10m 一格：10m / resolution = 像素间距（在变换后的 ctx 中绘制会自然随 zoom 缩放）
+        const step = Math.max(1, Math.round(10 / this.mapInfo.resolution));
         const mapWidth = this.mapImage.width;
         const mapHeight = this.mapImage.height;
         
         this.ctx.strokeStyle = 'rgba(200, 200, 200, 0.3)';
-        this.ctx.lineWidth = 0.5;
+        // 抵消缩放，让线宽在屏幕上更接近恒定
+        this.ctx.lineWidth = 0.5 / this.zoom;
         
         // 竖线
         for (let x = 0; x < mapWidth; x += step) {
@@ -446,35 +448,32 @@ class MapViewer {
     }
     
     drawZoneRect(zone, color, alpha) {
-        // 使用标准坐标转换方法（需要Y轴反转）
+        // 注意：drawZones() 在 render() 的 transform(translate+scale) 之后调用。
+        // 因此这里必须使用“地图像素坐标”绘制，不能再叠加 zoom/offset，否则会重复变换。
+
+        // 世界坐标 -> 栅格像素坐标（X 正常，Y 需翻转）
         const x1 = (zone.x1 - this.mapInfo.origin_x) / this.mapInfo.resolution;
         const x2 = (zone.x2 - this.mapInfo.origin_x) / this.mapInfo.resolution;
-        
+
         const mapHeight = this.mapImage.height;
         const y1 = mapHeight - ((zone.y1 - this.mapInfo.origin_y) / this.mapInfo.resolution);
         const y2 = mapHeight - ((zone.y2 - this.mapInfo.origin_y) / this.mapInfo.resolution);
-        
+
         const minX = Math.min(x1, x2);
         const maxX = Math.max(x1, x2);
         const minY = Math.min(y1, y2);
         const maxY = Math.max(y1, y2);
-        
-        // 应用缩放和偏移
-        const canvasMinX = minX * this.zoom + this.offsetX;
-        const canvasMaxX = maxX * this.zoom + this.offsetX;
-        const canvasMinY = minY * this.zoom + this.offsetY;
-        const canvasMaxY = maxY * this.zoom + this.offsetY;
-        
+
         // 填充
         this.ctx.fillStyle = color;
         this.ctx.globalAlpha = alpha;
-        this.ctx.fillRect(canvasMinX, canvasMinY, canvasMaxX - canvasMinX, canvasMaxY - canvasMinY);
-        
+        this.ctx.fillRect(minX, minY, maxX - minX, maxY - minY);
+
         // 边框
         this.ctx.globalAlpha = 1;
         this.ctx.strokeStyle = color;
-        this.ctx.lineWidth = 2;
-        this.ctx.strokeRect(canvasMinX, canvasMinY, canvasMaxX - canvasMinX, canvasMaxY - canvasMinY);
+        this.ctx.lineWidth = 2 / this.zoom;
+        this.ctx.strokeRect(minX, minY, maxX - minX, maxY - minY);
     }
     
     drawBeacon() {
@@ -595,6 +594,15 @@ class MapViewer {
         this.updateZonesDisplay();
         this.render();
         console.log('✓ 所有区域已清除');
+
+        // 立即同步到后端，避免刷新后“区域又回来”
+        fetch('/api/zones', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ zones: [] })
+        }).catch((error) => {
+            console.error('✗ 清除区域同步失败:', error);
+        });
     }
     
     updateZonesDisplay() {
@@ -750,7 +758,9 @@ async function updatePositionData() {
             
             document.getElementById('beaconX').textContent = Number(beaconX).toFixed(2);
             document.getElementById('beaconY').textContent = Number(beaconY).toFixed(2);
-            document.getElementById('beaconYaw').textContent = '─';  // Beacon无方向
+            // index.html 当前没有 beaconYaw 字段，避免空指针
+            const beaconYawEl = document.getElementById('beaconYaw');
+            if (beaconYawEl) beaconYawEl.textContent = '─';  // Beacon无方向
             document.getElementById('beaconConf').textContent = (Number(confidence) * 100).toFixed(1) + '%';
             document.getElementById('beaconDist').textContent = Number(distance).toFixed(2);
             document.getElementById('beaconAngle').textContent = Number(angle).toFixed(1);
@@ -804,7 +814,8 @@ async function updateStatus() {
         const statusDot = document.querySelector('.status-dot');
         const statusText = document.getElementById('statusText');
         
-        if (status.is_running && status.reader_connected) {
+        const beaconConnected = Boolean(status.reader_connected) || status.beacon_service === 'connected';
+        if (status.is_running && beaconConnected) {
             statusDot.className = 'status-dot online';
             statusText.textContent = '在线';
         } else {
@@ -816,11 +827,30 @@ async function updateStatus() {
     }
 }
 
+async function loadZonesFromServer() {
+    try {
+        const res = await fetch('/api/zones');
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data && Array.isArray(data.zones)) {
+            mapViewer.zones = data.zones;
+            mapViewer.updateZonesDisplay();
+            mapViewer.render();
+            console.log(`✓ 已加载检测区域: ${data.zones.length} 个`);
+        }
+    } catch (error) {
+        console.warn('⚠ 加载检测区域失败:', error);
+    }
+}
+
 // 页面初始化时自动加载地图和启动系统
 async function initializeMap() {
     try {
         await mapViewer.loadMap();
         console.log('✓ 地图自动加载成功');
+
+        // 自动加载检测区域
+        await loadZonesFromServer();
         
         // 自动启动系统
         setTimeout(() => {
@@ -843,16 +873,14 @@ setInterval(updatePositionData, 100);  // 10Hz 更新频率
 setInterval(updateStatus, 1000);  // 1Hz 更新状态
 setInterval(async () => {
     // 定期保存检测区域到服务器
-    if (mapViewer.zones.length > 0) {
-        try {
-            await fetch('/api/zones', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ zones: mapViewer.zones })
-            });
-        } catch (error) {
-            console.error('✗ 保存区域失败:', error);
-        }
+    try {
+        await fetch('/api/zones', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ zones: mapViewer.zones })
+        });
+    } catch (error) {
+        console.error('✗ 保存区域失败:', error);
     }
 }, 5000);  // 5秒保存一次
 

@@ -3,12 +3,13 @@ Beacon 卡尔曼滤波服务
 自动连接串口，接收 beacon 数据，应用卡尔曼滤波，并通过 Flask API 提供结果
 """
 
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 import threading
 import time
 import logging
 import re
+from collections import deque
 from typing import Optional, Dict
 from workers.aoa_serial_reader import AOASerialReader
 from workers.aoa_kalman_filter import MultiTargetKalmanFilter
@@ -19,6 +20,10 @@ logging.basicConfig(
     format='%(asctime)s [%(levelname)s] %(name)s: %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# 关闭 werkzeug 的 HTTP 访问日志（例如："GET /api/beacon" 200 -），避免刷屏
+# 保留 ERROR 级别以上，便于看到真正的异常
+logging.getLogger('werkzeug').setLevel(logging.ERROR)
 
 app = Flask(__name__)
 CORS(app)
@@ -43,6 +48,11 @@ class BeaconFilterState:
             'timestamp': 0.0,
             'initialized': False
         }
+
+        # 最近一段时间的结果缓冲，用于按时间戳取“同一时刻”的结果
+        # 存储格式与 latest_result 一致，包含 timestamp（秒）
+        self.history = deque(maxlen=200)
+        self.history.append(self.latest_result.copy())
         
         # 统计信息
         self.stats = {
@@ -53,6 +63,27 @@ class BeaconFilterState:
         }
 
 state = BeaconFilterState()
+
+
+def get_nearest_result(target_ts: float) -> Dict:
+    """从 history 中取与 target_ts 最近的一条结果；若无有效历史则返回 latest_result。"""
+    with state.lock:
+        if not state.history:
+            return state.latest_result.copy()
+
+        best = None
+        best_dt = None
+        for item in state.history:
+            try:
+                ts = float(item.get('timestamp', 0.0))
+            except Exception:
+                continue
+            dt = abs(ts - float(target_ts))
+            if best is None or dt < best_dt:
+                best = item
+                best_dt = dt
+
+        return (best or state.latest_result).copy()
 
 
 def parse_beacon_line(line: str) -> Optional[Dict]:
@@ -125,19 +156,21 @@ def beacon_processing_thread():
                             filter_state = state.kalman.get_filter_state(tag_id)
                             
                             # 更新最新结果
+                            result = {
+                                'x': float(x),
+                                'y': float(y),
+                                'velocity_x': float(filter_state.get('vx', 0.0)),
+                                'velocity_y': float(filter_state.get('vy', 0.0)),
+                                'confidence': float(info.get('confidence', 0.0)),
+                                'distance': float(beacon_data['distance']),
+                                'angle': float(beacon_data['angle']),
+                                'timestamp': float(beacon_data['timestamp']),
+                                'initialized': bool(filter_state.get('initialized', False)),
+                                'peer': beacon_data['peer']
+                            }
                             with state.lock:
-                                state.latest_result = {
-                                    'x': float(x),
-                                    'y': float(y),
-                                    'velocity_x': float(filter_state.get('vx', 0.0)),
-                                    'velocity_y': float(filter_state.get('vy', 0.0)),
-                                    'confidence': float(info.get('confidence', 0.0)),
-                                    'distance': float(beacon_data['distance']),
-                                    'angle': float(beacon_data['angle']),
-                                    'timestamp': float(beacon_data['timestamp']),
-                                    'initialized': bool(filter_state.get('initialized', False)),
-                                    'peer': beacon_data['peer']
-                                }
+                                state.latest_result = result
+                                state.history.append(result)
                                 state.stats['filtered_packets'] += 1
                                 state.stats['last_update'] = time.time()
                             
@@ -218,7 +251,15 @@ def index():
 
 @app.route('/api/beacon')
 def get_beacon():
-    """获取最新的滤波后 beacon 数据"""
+    """获取滤波后 beacon 数据
+
+    - 默认：返回最新一条结果
+    - 可选：/api/beacon?timestamp=1700000000.123  返回与该时间戳最近的结果
+    """
+    ts = request.args.get('timestamp', type=float)
+    if ts is not None:
+        return jsonify(get_nearest_result(ts))
+
     with state.lock:
         return jsonify(state.latest_result)
 
